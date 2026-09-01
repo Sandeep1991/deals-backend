@@ -29,6 +29,26 @@ React  →  FastAPI (this repo)  →  Azure AI Search
 4. **Startup command:** `bash startup.sh`
 5. Test: `https://<your-app>.azurewebsites.net/health`
 
+### GitHub Actions deploy fails: "No subscriptions found"
+
+The Node 20 message is only a warning — the real error is Azure permissions.
+
+OIDC login worked, but the App Registration service principal cannot see your subscription. Fix in Azure Portal:
+
+1. **Subscriptions** → your subscription → **Access control (IAM)** → **Add role assignment**
+2. Role: **Contributor** (or **Website Contributor** on the resource group)
+3. Assign access to: **User, group, or service principal**
+4. Search by the **App Registration name** (paste the client ID from GitHub secret `AZUREAPPSERVICE_CLIENTID_*` if name search fails)
+5. Save, wait 2–5 minutes, re-run the workflow
+
+Also verify **App registrations** → your app → **Certificates & secrets** → **Federated credentials** includes:
+
+```
+repo:Sandeep1991/deals-backend:ref:refs/heads/main
+```
+
+If GitHub shows a subject with `@` IDs (e.g. `Sandeep1991@8342110/deals-backend@...`), add a second federated credential with that exact subject from the failed workflow log.
+
 ## Local development
 
 ```bash
