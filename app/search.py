@@ -66,12 +66,14 @@ class SearchService:
             semantic_score=reranker_score,
         )
 
-    def _passes_threshold(self, doc: dict[str, Any]) -> bool:
+    def _passes_threshold(self, doc: dict[str, Any], min_score: float | None = None) -> bool:
         search_score = float(doc.get("@search.score", 0))
         reranker_score = float(doc.get("@search.rerankerScore", 0))
+        min_reranker = min_score if min_score is not None else self.settings.min_reranker_score
+        min_search = min_score if min_score is not None else self.settings.min_search_score
         if reranker_score > 0:
-            return reranker_score >= self.settings.min_reranker_score
-        return search_score >= self.settings.min_search_score
+            return reranker_score >= min_reranker
+        return search_score >= min_search
 
     def _vector_field(self) -> str | None:
         field = self.settings.azure_search_vector_field.strip()
@@ -95,7 +97,13 @@ class SearchService:
             kwargs["vector_queries"] = vector_queries
         return list(self.client.search(**kwargs))
 
-    def search(self, query: str, limit: int | None = None) -> list[SearchResultItem]:
+    def search(
+        self,
+        query: str,
+        limit: int | None = None,
+        merchant: str | None = None,
+        min_score: float | None = None,
+    ) -> list[SearchResultItem]:
         limit = limit or self.settings.search_result_limit
         query = query.strip()
         if not query:
@@ -110,6 +118,10 @@ class SearchService:
             "search_fields": ["title", "description", "keywords", "category", "merchant"],
         }
 
+        if merchant:
+            safe = merchant.replace("'", "''")
+            kwargs["filter"] = f"merchant eq '{safe}'"
+
         if use_hybrid:
             kwargs["query_type"] = "semantic"
             kwargs["semantic_configuration_name"] = self.settings.azure_search_semantic_config
@@ -120,14 +132,24 @@ class SearchService:
 
         docs = self._run_search(**kwargs, vector_queries=vector_queries)
 
-        filtered = [doc for doc in docs if self._passes_threshold(doc)]
+        threshold = min_score if min_score is not None else None
+        filtered = [
+            doc for doc in docs
+            if self._passes_threshold(doc, min_score=threshold)
+        ]
         if not filtered and docs and not use_hybrid:
-            return self._hybrid_search(query, limit)
+            return self._hybrid_search(query, limit, merchant=merchant, min_score=min_score)
 
         results = [self._to_result(doc) for doc in filtered[:limit]]
         return results
 
-    def _hybrid_search(self, query: str, limit: int) -> list[SearchResultItem]:
+    def _hybrid_search(
+        self,
+        query: str,
+        limit: int,
+        merchant: str | None = None,
+        min_score: float | None = None,
+    ) -> list[SearchResultItem]:
         kwargs: dict[str, Any] = {
             "search_text": query,
             "query_type": "semantic",
@@ -136,8 +158,15 @@ class SearchService:
             "search_fields": ["title", "description", "keywords", "category", "merchant"],
             "top": self.settings.search_top_k,
         }
+        if merchant:
+            safe = merchant.replace("'", "''")
+            kwargs["filter"] = f"merchant eq '{safe}'"
         docs = self._run_search(**kwargs, vector_queries=self._vector_queries(query))
-        filtered = [doc for doc in docs if self._passes_threshold(doc)]
+        threshold = min_score if min_score is not None else None
+        filtered = [
+            doc for doc in docs
+            if self._passes_threshold(doc, min_score=threshold)
+        ]
         return [self._to_result(doc) for doc in filtered[:limit]]
 
     def upsert_ads(self, ads: list[Ad]) -> list[str]:

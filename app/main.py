@@ -3,17 +3,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.config import ENV_FILE, get_settings
+from app.compare import to_compare_response
 from app.models import (
     Ad,
     BulkAdsRequest,
     BulkAdsResponse,
     ChatRequest,
     ChatResponse,
+    CompareRequest,
+    CompareResponse,
     HealthResponse,
     SearchRequest,
     SearchResponse,
 )
+from app.llm_client import LLMNotConfiguredError, resolve_decompose_provider
+from app.party_planner.graph import run_store_comparison
 from app.replies import generate_reply
+from app.routing import should_compare
 from app.search import SearchService, SearchNotConfiguredError
 
 settings = get_settings()
@@ -51,16 +57,39 @@ def root() -> RedirectResponse:
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     current = get_settings()
+    decompose = resolve_decompose_provider(current) or "none"
     return HealthResponse(
         status="ok",
         search_configured=search_service.is_configured,
         reply_provider=current.reply_provider,
+        decompose_configured=decompose != "none",
+        decompose_provider=decompose,
     )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     require_search()
+
+    if should_compare(request.query, request.mode):
+        try:
+            comparison = await run_store_comparison(request.query, search_service)
+            compare_response = to_compare_response(comparison)
+            return ChatResponse(
+                query=request.query,
+                reply=compare_response.reply,
+                ads=compare_response.ads,
+                results=[],
+                mode="compare",
+                comparison=compare_response,
+            )
+        except SearchNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Compare failed: {exc}") from exc
+
     try:
         results = search_service.search(request.query, limit=request.limit)
     except SearchNotConfiguredError as exc:
@@ -74,7 +103,22 @@ async def chat(request: ChatRequest) -> ChatResponse:
         reply=reply,
         ads=[item.ad for item in results],
         results=results,
+        mode="search",
     )
+
+
+@app.post("/api/compare", response_model=CompareResponse)
+async def compare(request: CompareRequest) -> CompareResponse:
+    require_search()
+    try:
+        comparison = await run_store_comparison(request.query, search_service)
+        return to_compare_response(comparison)
+    except SearchNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Compare failed: {exc}") from exc
 
 
 @app.post("/api/search", response_model=SearchResponse)

@@ -28,18 +28,24 @@ class Settings(BaseSettings):
     min_reranker_score: float = 1.5
     meaning_query_terms: str = "discount,deal,sale,cheap,savings,offer,promo,off"
 
-    # Reply generation: template | ollama | azure_openai
+    # Reply generation for simple search: template | ollama | azure_openai
     reply_provider: str = "template"
+
+    # Ingredient decomposition for store compare: auto | azure_openai | ollama | template
+    # auto = use Azure OpenAI if configured, else Ollama; template = heuristics only (limited)
+    decompose_provider: str = "auto"
 
     # Ollama (local / dev — CPU-friendly small models)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2:1b"
 
-    # Azure OpenAI (optional production LLM)
+    # Azure OpenAI / AI Foundry (optional production LLM)
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_deployment: str = "gpt-4o-mini"
     azure_openai_api_version: str = "2024-08-01-preview"
+    # auto = Foundry v1 when endpoint uses services.ai.azure.com, else legacy deployments URL
+    azure_openai_api_style: str = "auto"
 
     cors_origins: str = (
         "http://localhost:5173,http://localhost:3000,"
