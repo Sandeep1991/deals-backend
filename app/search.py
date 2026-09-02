@@ -53,6 +53,7 @@ class SearchService:
             keywords=doc.get("keywords", ""),
             price=doc.get("price", ""),
             url=doc.get("url", ""),
+            merchant=doc.get("merchant") or "",
         )
 
     def _to_result(self, doc: dict[str, Any]) -> SearchResultItem:
@@ -104,9 +105,9 @@ class SearchService:
 
         kwargs: dict[str, Any] = {
             "search_text": query,
-            "select": ["id", "title", "description", "category", "keywords", "price", "url"],
+            "select": ["id", "title", "description", "category", "keywords", "price", "url", "merchant"],
             "top": self.settings.search_top_k,
-            "search_fields": ["title", "description", "keywords", "category"],
+            "search_fields": ["title", "description", "keywords", "category", "merchant"],
         }
 
         if use_hybrid:
@@ -131,8 +132,8 @@ class SearchService:
             "search_text": query,
             "query_type": "semantic",
             "semantic_configuration_name": self.settings.azure_search_semantic_config,
-            "select": ["id", "title", "description", "category", "keywords", "price", "url"],
-            "search_fields": ["title", "description", "keywords", "category"],
+            "select": ["id", "title", "description", "category", "keywords", "price", "url", "merchant"],
+            "search_fields": ["title", "description", "keywords", "category", "merchant"],
             "top": self.settings.search_top_k,
         }
         docs = self._run_search(**kwargs, vector_queries=self._vector_queries(query))

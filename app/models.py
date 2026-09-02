@@ -9,6 +9,7 @@ class Ad(BaseModel):
     keywords: str
     price: str
     url: str
+    merchant: str = ""
 
 
 class AdUpsert(Ad):
