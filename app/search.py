@@ -72,6 +72,28 @@ class SearchService:
             return reranker_score >= self.settings.min_reranker_score
         return search_score >= self.settings.min_search_score
 
+    def _vector_field(self) -> str | None:
+        field = self.settings.azure_search_vector_field.strip()
+        return field or None
+
+    def _vector_queries(self, query: str) -> list[VectorizableTextQuery] | None:
+        field = self._vector_field()
+        if not field:
+            return None
+        return [
+            VectorizableTextQuery(
+                text=query,
+                k_nearest_neighbors=self.settings.search_top_k,
+                fields=field,
+            )
+        ]
+
+    def _run_search(self, **kwargs: Any) -> list[dict[str, Any]]:
+        vector_queries = kwargs.pop("vector_queries", None)
+        if vector_queries:
+            kwargs["vector_queries"] = vector_queries
+        return list(self.client.search(**kwargs))
+
     def search(self, query: str, limit: int | None = None) -> list[SearchResultItem]:
         limit = limit or self.settings.search_result_limit
         query = query.strip()
@@ -90,17 +112,12 @@ class SearchService:
         if use_hybrid:
             kwargs["query_type"] = "semantic"
             kwargs["semantic_configuration_name"] = self.settings.azure_search_semantic_config
-            kwargs["vector_queries"] = [
-                VectorizableTextQuery(
-                    text=query,
-                    k_nearest_neighbors=self.settings.search_top_k,
-                    fields=self.settings.azure_search_vector_field,
-                )
-            ]
+            vector_queries = self._vector_queries(query)
         else:
             kwargs["query_type"] = "simple"
+            vector_queries = None
 
-        docs = list(self.client.search(**kwargs))
+        docs = self._run_search(**kwargs, vector_queries=vector_queries)
 
         filtered = [doc for doc in docs if self._passes_threshold(doc)]
         if not filtered and docs and not use_hybrid:
@@ -110,23 +127,15 @@ class SearchService:
         return results
 
     def _hybrid_search(self, query: str, limit: int) -> list[SearchResultItem]:
-        docs = list(
-            self.client.search(
-                search_text=query,
-                query_type="semantic",
-                semantic_configuration_name=self.settings.azure_search_semantic_config,
-                vector_queries=[
-                    VectorizableTextQuery(
-                        text=query,
-                        k_nearest_neighbors=self.settings.search_top_k,
-                        fields=self.settings.azure_search_vector_field,
-                    )
-                ],
-                select=["id", "title", "description", "category", "keywords", "price", "url"],
-                search_fields=["title", "description", "keywords", "category"],
-                top=self.settings.search_top_k,
-            )
-        )
+        kwargs: dict[str, Any] = {
+            "search_text": query,
+            "query_type": "semantic",
+            "semantic_configuration_name": self.settings.azure_search_semantic_config,
+            "select": ["id", "title", "description", "category", "keywords", "price", "url"],
+            "search_fields": ["title", "description", "keywords", "category"],
+            "top": self.settings.search_top_k,
+        }
+        docs = self._run_search(**kwargs, vector_queries=self._vector_queries(query))
         filtered = [doc for doc in docs if self._passes_threshold(doc)]
         return [self._to_result(doc) for doc in filtered[:limit]]
 

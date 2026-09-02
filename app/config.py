@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     azure_search_api_key: str = ""
     azure_search_index: str = "ads"
     azure_search_semantic_config: str = "ads-semantic"
-    azure_search_vector_field: str = "contentVector"
+    azure_search_vector_field: str = ""
 
     # Search tuning
     search_top_k: int = 10
