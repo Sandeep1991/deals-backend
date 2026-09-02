@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = "gpt-4o-mini"
     azure_openai_api_version: str = "2024-08-01-preview"
 
-    cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    cors_origins: str = (
+        "http://localhost:5173,http://localhost:3000,"
+        "https://thetinkerer.xyz,https://www.thetinkerer.xyz"
+    )
 
 
 @lru_cache
