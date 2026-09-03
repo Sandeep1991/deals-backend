@@ -9,33 +9,30 @@ DECOMPOSE_SYSTEM = """You are a grocery shopping planner. Break the user's reque
 Return JSON with this exact shape:
 {
   "event_summary": "short summary of the event or meal",
+  "people_count": 6,
   "required_items": [
-    {"name": "item name", "search_terms": ["term1", "term2"], "quantity": 1}
+    {"name": "taco shells", "search_terms": ["taco shells"], "quantity": 1}
   ],
-  "alternative_options": [
-    {
-      "label": "optional group name",
-      "items": [
-        {"name": "item name", "search_terms": ["term1"], "quantity": 1}
-      ]
-    }
-  ]
+  "alternative_options": []
 }
 
-Rules:
-- required_items: every ingredient or product needed for the request.
-- alternative_options: OR choices when multiple approaches work (same label = pick cheapest per store).
-  Example: milkshake from ice cream OR from milk + chocolate syrup — two entries with label "milkshake".
-- search_terms: 1-3 simple grocery terms that would match supermarket ads (brand names OK).
-- quantity: estimate servings/items needed (default 1).
-- Think step by step: meals → proteins, carbs, produce, dairy, condiments, drinks, etc.
-- Only include grocery/pantry items, not utensils or decorations unless explicitly requested.
+CRITICAL — how `quantity` works:
+- `quantity` = number of PACKAGES/UNITS to buy at the store (boxes, bags, cans, bottles).
+- `quantity` is NOT the number of guests. Never set quantity to people_count for shareable items.
+- `people_count`: how many guests (from the request), or null if unknown.
 
-Examples:
-- "PBJ party" → bread, peanut butter, jelly
-- "taco night for 4" → ground beef or chicken, taco shells, shredded cheese, salsa, sour cream, lettuce
-- "BBQ for 6" → hot dogs or burgers, buns, condiments, chips, soda
-- "chocolate milkshake" as add-on → alternative: chocolate ice cream OR milk + Hershey/chocolate syrup"""
+Pack-size examples:
+- "taco shells" for 6 people → quantity 1 (one 12-count box is enough for ~6 people at 2 tacos each)
+- "shredded cheese" for 6 people → quantity 1 (one 8 oz bag)
+- "black beans" for 6 people → quantity 1 (one 15 oz can)
+- "Jarritos" or soda for 6 people → quantity 6 (one bottle per person)
+- "bell peppers" for 6 people → quantity 1.5 (meaning ~1.5 lb, sold by weight)
+
+Rules:
+- required_items: every ingredient or product needed.
+- alternative_options: OR choices (same label = pick cheapest per store).
+- search_terms: 1-3 terms that match supermarket ads.
+- Think: meals → proteins, carbs, produce, dairy, condiments, drinks."""
 
 
 def heuristic_decompose(query: str) -> ShoppingPlan:

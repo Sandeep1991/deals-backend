@@ -20,6 +20,7 @@ class AlternativeOption(BaseModel):
 
 class ShoppingPlan(BaseModel):
     event_summary: str
+    people_count: Optional[int] = None
     required_items: list[ShoppingItem] = Field(default_factory=list)
     alternative_options: list[AlternativeOption] = Field(default_factory=list)
 

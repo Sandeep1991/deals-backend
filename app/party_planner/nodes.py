@@ -6,6 +6,7 @@ from app.advisory import format_missing_catalog_items
 from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_configured, resolve_decompose_provider
 from app.models import Ad
 from app.party_planner.decompose import DECOMPOSE_SYSTEM, heuristic_decompose
+from app.party_planner.quantities import normalize_plan_quantities, packages_for_ad
 from app.party_planner.state import (
     AlternativeOption,
     PlannerState,
@@ -79,6 +80,8 @@ async def decompose_node(state: PlannerState) -> dict:
     if used_fallback:
         plan.event_summary = f"{plan.event_summary} (fallback planner — configure LLM for better results)"
 
+    plan = normalize_plan_quantities(plan, query)
+
     return {"plan": plan}
 
 
@@ -86,6 +89,8 @@ async def fetch_prices_node(state: PlannerState, search_service: SearchService) 
     plan = state["plan"]
     if not plan:
         return {"quotes": []}
+
+    people_count = plan.people_count
 
     quotes: list[ProductQuote] = []
     items_to_fetch: list[tuple[str, ShoppingItem, str | None]] = []
@@ -105,7 +110,7 @@ async def fetch_prices_node(state: PlannerState, search_service: SearchService) 
                 continue
             seen.add(key)
 
-            quote = await _quote_item(search_service, merchant, item)
+            quote = await _quote_item(search_service, merchant, item, people_count)
             if quote:
                 quotes.append(quote)
 
@@ -116,6 +121,7 @@ async def _quote_item(
     search_service: SearchService,
     merchant: str,
     item: ShoppingItem,
+    people_count: int | None = None,
 ) -> ProductQuote | None:
     ad: Ad | None = None
     source = "search"
@@ -143,7 +149,8 @@ async def _quote_item(
         return None
 
     unit_price = parse_price(ad.price)
-    line_total = round(unit_price * item.quantity, 2) if unit_price is not None else None
+    buy_qty = packages_for_ad(item, ad.title, ad.price, people_count)
+    line_total = round(unit_price * buy_qty, 2) if unit_price is not None else None
 
     return ProductQuote(
         item_name=item.name,
