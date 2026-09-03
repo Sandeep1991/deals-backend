@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.advisory import format_missing_catalog_items
 from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_configured, resolve_decompose_provider
 from app.models import Ad
 from app.party_planner.decompose import DECOMPOSE_SYSTEM, heuristic_decompose
@@ -316,5 +317,24 @@ def _format_reply(comparison: StoreComparison) -> str:
             if others:
                 msg += f" — save about **${comparison.savings:.2f}** vs {others[0].merchant}"
         lines.append(msg)
+
+    missing: list[str] = []
+    priced_names = {
+        q.item_name
+        for b in comparison.merchants
+        for q in b.quotes
+        if q.source == "search" and q.line_total is not None
+    }
+    for item in plan.required_items:
+        if item.name not in priced_names:
+            missing.append(item.name)
+    for option in plan.alternative_options:
+        for item in option.items:
+            if item.name not in priced_names and item.name not in missing:
+                missing.append(item.name)
+
+    missing_note = format_missing_catalog_items(missing)
+    if missing_note:
+        lines.append(missing_note)
 
     return "\n".join(lines)

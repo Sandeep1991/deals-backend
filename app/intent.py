@@ -66,18 +66,23 @@ def results_match_query(query: str, title: str, keywords: str, description: str,
 
 
 def out_of_scope_reply(query: str) -> str:
+    """Sync fallback only — prefer build_advisory_reply() when LLM is available."""
     if NON_GROCERY_HINTS.search(query):
-        return (
-            "DealFinder specializes in **Kroger and Walmart grocery deals** — we don't have "
-            "school supplies or stationery in our catalog.\n\n"
-            "For **1st grade**, you'll typically need pencils, crayons, glue sticks, safety scissors, "
-            "wide-rule notebooks, folders, and erasers. Check Walmart, Target, or office supply stores for those.\n\n"
-            "I *can* compare grocery deals for **lunchbox snacks**, **after-school treats**, or **packed lunches**. "
-            'Try: "Which store has cheaper lunchbox snacks?" or "PBJ party deals."'
-        )
+        plan = _static_stationery_plan_sync(query)
+        from app.advisory import format_advisory_reply
+
+        return format_advisory_reply(plan, in_catalog_scope=False)
 
     return (
         f"I couldn't find grocery deals that match \"{query}\". "
         "DealFinder covers **food and household items** at Kroger and Walmart. "
         "Try a specific product like bread, milk, cereal, or soap."
     )
+
+
+def _static_stationery_plan_sync(query: str):
+    from app.advisory import _static_stationery_items
+
+    plan = _static_stationery_items()
+    plan.event_summary = query.strip()[:100] or plan.event_summary
+    return plan
