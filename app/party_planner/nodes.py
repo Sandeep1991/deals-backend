@@ -176,17 +176,18 @@ def compare_node(state: PlannerState) -> dict:
 
         selected: list[ProductQuote] = []
         subtotal = 0.0
-        partial = False
+        priced_items = 0
+        total_items = 0
         alt_label: str | None = None
 
         for item in plan.required_items:
             quote = quote_map.get(item.name)
             if quote:
                 selected.append(quote)
+                total_items += 1
                 if quote.line_total is not None:
                     subtotal += quote.line_total
-                else:
-                    partial = True
+                    priced_items += 1
 
         if plan.alternative_options:
             branches_by_label: dict[str, list[list[ShoppingItem]]] = {}
@@ -195,43 +196,51 @@ def compare_node(state: PlannerState) -> dict:
 
             best_alt_total: float | None = None
             best_alt_quotes: list[ProductQuote] = []
+            best_alt_priced = 0
             best_label: str | None = None
 
             for label, branches in branches_by_label.items():
                 for branch_items in branches:
                     option_quotes: list[ProductQuote] = []
                     option_total = 0.0
-                    option_partial = False
+                    option_priced = 0
                     for opt_item in branch_items:
                         quote = quote_map.get(opt_item.name)
                         if not quote:
-                            option_partial = True
-                            break
+                            continue
                         option_quotes.append(quote)
                         if quote.line_total is not None:
                             option_total += quote.line_total
-                        else:
-                            option_partial = True
+                            option_priced += 1
 
-                    if option_partial:
+                    if not option_quotes:
                         continue
                     if best_alt_total is None or option_total < best_alt_total:
                         best_alt_total = option_total
                         best_alt_quotes = option_quotes
+                        best_alt_priced = option_priced
                         best_label = label
 
             if best_alt_quotes:
                 selected.extend(best_alt_quotes)
                 alt_label = best_label
+                total_items += len(best_alt_quotes)
+                priced_items += best_alt_priced
                 if best_alt_total is not None:
                     subtotal += best_alt_total
+
+        partial = priced_items < total_items or total_items == 0
+        basket_subtotal = round(subtotal, 2) if priced_items > 0 else None
 
         baskets.append(
             MerchantBasket(
                 merchant=merchant,
                 quotes=selected,
                 alternative_label=alt_label,
-                subtotal=None if partial else round(subtotal, 2),
+                subtotal=basket_subtotal,
+                subtotal_is_partial=partial and priced_items > 0,
+                priced_items=priced_items,
+                total_items=total_items,
             )
         )
 
@@ -289,9 +298,15 @@ def _format_reply(comparison: StoreComparison) -> str:
             source = " (web)" if quote.source == "web" else ""
             lines.append(f"- {quote.item_name}: [{quote.ad.title}]({quote.ad.url}) — {price}{total}{source}")
         if basket.subtotal is not None:
-            lines.append(f"**Estimated total: ${basket.subtotal:.2f}**")
+            if basket.subtotal_is_partial:
+                lines.append(
+                    f"**Estimated total: ${basket.subtotal:.2f}** "
+                    f"({basket.priced_items}/{basket.total_items} items priced — some items need in-store check)"
+                )
+            else:
+                lines.append(f"**Estimated total: ${basket.subtotal:.2f}**")
         else:
-            lines.append("**Estimated total: unavailable** (some prices couldn't be parsed)")
+            lines.append("**Estimated total: unavailable** (no prices found in catalog)")
         lines.append("")
 
     if comparison.recommended_merchant:

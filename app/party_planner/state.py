@@ -38,6 +38,9 @@ class MerchantBasket(BaseModel):
     quotes: list[ProductQuote] = Field(default_factory=list)
     alternative_label: Optional[str] = None
     subtotal: Optional[float] = None
+    subtotal_is_partial: bool = False
+    priced_items: int = 0
+    total_items: int = 0
 
 
 class StoreComparison(BaseModel):

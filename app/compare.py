@@ -21,6 +21,9 @@ def to_compare_response(comparison: StoreComparison) -> CompareResponse:
             ],
             alternative_label=basket.alternative_label,
             subtotal=basket.subtotal,
+            subtotal_is_partial=basket.subtotal_is_partial,
+            priced_items=basket.priced_items,
+            total_items=basket.total_items,
         )
         for basket in comparison.merchants
     ]
