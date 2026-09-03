@@ -14,6 +14,10 @@ class Ad(BaseModel):
     price: str
     url: str
     merchant: str = ""
+    network: str = ""
+    brand: str = ""
+    source_key: str = ""
+    expires_at: str = ""
 
 
 class AdUpsert(Ad):

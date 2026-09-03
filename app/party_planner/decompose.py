@@ -27,12 +27,13 @@ Pack-size examples:
 - "black beans" for 6 people → quantity 1 (one 15 oz can)
 - "Jarritos" or soda for 6 people → quantity 6 (one bottle per person)
 - "bell peppers" for 6 people → quantity 1.5 (meaning ~1.5 lb, sold by weight)
+- "chai tea latte for 10" → tea, milk, sweetener/honey, spices (or concentrate), cups if needed
 
 Rules:
-- required_items: every ingredient or product needed.
+- required_items: every ingredient or product needed (for drinks include base, dairy/alt milk, sweetener, spices).
 - alternative_options: OR choices (same label = pick cheapest per store).
 - search_terms: 1-3 terms that match supermarket ads.
-- Think: meals → proteins, carbs, produce, dairy, condiments, drinks."""
+- Think: meals/drinks → proteins, carbs, produce, dairy, condiments, beverages, spices."""
 
 
 def heuristic_decompose(query: str) -> ShoppingPlan:
