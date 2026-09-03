@@ -16,6 +16,7 @@ from app.models import (
     SearchRequest,
     SearchResponse,
 )
+from app.intent import is_non_grocery_query, out_of_scope_reply, results_match_query
 from app.llm_client import LLMNotConfiguredError, resolve_decompose_provider
 from app.party_planner.graph import run_store_comparison
 from app.replies import generate_reply
@@ -72,6 +73,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
     require_search()
 
     if should_compare(request.query, request.mode):
+        if is_non_grocery_query(request.query):
+            reply = out_of_scope_reply(request.query)
+            return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="search")
         try:
             comparison = await run_store_comparison(request.query, search_service)
             compare_response = to_compare_response(comparison)
@@ -90,12 +94,32 @@ async def chat(request: ChatRequest) -> ChatResponse:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Compare failed: {exc}") from exc
 
+    if is_non_grocery_query(request.query):
+        reply = out_of_scope_reply(request.query)
+        return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="search")
+
     try:
         results = search_service.search(request.query, limit=request.limit)
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Search failed: {exc}") from exc
+
+    results = [
+        item
+        for item in results
+        if results_match_query(
+            request.query,
+            item.ad.title,
+            item.ad.keywords,
+            item.ad.description,
+            item.ad.category,
+        )
+    ]
+
+    if not results:
+        reply = out_of_scope_reply(request.query)
+        return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="search")
 
     reply = await generate_reply(request.query, results)
     return ChatResponse(
