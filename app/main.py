@@ -69,24 +69,66 @@ def health() -> HealthResponse:
     )
 
 
+def _compare_has_catalog_prices(compare_response: CompareResponse) -> bool:
+    """True when at least one quote came from AI Search (not web-only 'See site')."""
+    for basket in compare_response.merchants:
+        for quote in basket.quotes:
+            if quote.source == "search" and quote.unit_price is not None:
+                return True
+    return False
+
+
+async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
+    results = search_service.search(query, limit=limit)
+    results = [
+        item
+        for item in results
+        if results_match_query(
+            query,
+            item.ad.title,
+            item.ad.keywords,
+            item.ad.description,
+            item.ad.category,
+        )
+    ]
+    if not results:
+        try:
+            reply = await build_advisory_reply(query, in_catalog_scope=True)
+        except Exception:
+            reply = out_of_scope_reply(query)
+        return ChatResponse(query=query, reply=reply, ads=[], results=[], mode="advisory")
+
+    reply = await generate_reply(query, results)
+    return ChatResponse(
+        query=query,
+        reply=reply,
+        ads=[item.ad for item in results],
+        results=results,
+        mode="search",
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     require_search()
 
-    # Default (auto/compare): LLM decomposes the request, then AI Search prices each item.
-    # mode=search keeps a direct catalog lookup for short product queries.
+    # Grocery/planning → LLM decompose + Kroger/Walmart compare.
+    # Product/affiliate queries → open AI Search (Anker Solix, etc.).
     if should_compare(request.query, request.mode):
         try:
             comparison = await run_store_comparison(request.query, search_service)
             compare_response = to_compare_response(comparison)
-            return ChatResponse(
-                query=request.query,
-                reply=compare_response.reply,
-                ads=compare_response.ads,
-                results=[],
-                mode="compare",
-                comparison=compare_response,
-            )
+            if _compare_has_catalog_prices(compare_response):
+                return ChatResponse(
+                    query=request.query,
+                    reply=compare_response.reply,
+                    ads=compare_response.ads,
+                    results=[],
+                    mode="compare",
+                    comparison=compare_response,
+                )
+            # No grocery catalog hits — fall back so Rakuten/other merchants can surface.
+            return await _catalog_search_response(request.query, request.limit)
         except SearchNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except LLMNotConfiguredError as exc:
@@ -99,39 +141,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="advisory")
 
     try:
-        results = search_service.search(request.query, limit=request.limit)
+        return await _catalog_search_response(request.query, request.limit)
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Search failed: {exc}") from exc
-
-    results = [
-        item
-        for item in results
-        if results_match_query(
-            request.query,
-            item.ad.title,
-            item.ad.keywords,
-            item.ad.description,
-            item.ad.category,
-        )
-    ]
-
-    if not results:
-        try:
-            reply = await build_advisory_reply(request.query, in_catalog_scope=True)
-        except Exception:
-            reply = out_of_scope_reply(request.query)
-        return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="advisory")
-
-    reply = await generate_reply(request.query, results)
-    return ChatResponse(
-        query=request.query,
-        reply=reply,
-        ads=[item.ad for item in results],
-        results=results,
-        mode="search",
-    )
 
 
 @app.post("/api/compare", response_model=CompareResponse)

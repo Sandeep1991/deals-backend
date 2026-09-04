@@ -54,6 +54,10 @@ class SearchService:
             price=doc.get("price", ""),
             url=doc.get("url", ""),
             merchant=doc.get("merchant") or "",
+            network=doc.get("network") or "",
+            brand=doc.get("brand") or "",
+            source_key=doc.get("source_key") or "",
+            expires_at=doc.get("expires_at") or "",
         )
 
     def _to_result(self, doc: dict[str, Any]) -> SearchResultItem:
@@ -113,9 +117,12 @@ class SearchService:
 
         kwargs: dict[str, Any] = {
             "search_text": query,
-            "select": ["id", "title", "description", "category", "keywords", "price", "url", "merchant"],
+            "select": [
+                "id", "title", "description", "category", "keywords", "price", "url",
+                "merchant", "network", "brand", "source_key", "expires_at",
+            ],
             "top": self.settings.search_top_k,
-            "search_fields": ["title", "description", "keywords", "category", "merchant"],
+            "search_fields": ["title", "description", "keywords", "category", "merchant", "brand"],
         }
 
         if merchant:
@@ -154,8 +161,11 @@ class SearchService:
             "search_text": query,
             "query_type": "semantic",
             "semantic_configuration_name": self.settings.azure_search_semantic_config,
-            "select": ["id", "title", "description", "category", "keywords", "price", "url", "merchant"],
-            "search_fields": ["title", "description", "keywords", "category", "merchant"],
+            "select": [
+                "id", "title", "description", "category", "keywords", "price", "url",
+                "merchant", "network", "brand", "source_key", "expires_at",
+            ],
+            "search_fields": ["title", "description", "keywords", "category", "merchant", "brand"],
             "top": self.settings.search_top_k,
         }
         if merchant:

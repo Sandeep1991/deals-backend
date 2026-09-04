@@ -41,6 +41,7 @@ STOPWORDS = {
     # Natural-language packing/trip words — do not match product "pack" sizes
     "going", "spend", "weekend", "camp", "camping", "pack", "packing",
     "essentials", "essential", "trip", "travel", "please", "am",
+    "home", "house",  # "solar charger for home" should match on solar/charger
 }
 
 

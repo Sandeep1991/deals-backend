@@ -1,15 +1,60 @@
 from __future__ import annotations
 
+import re
+
+# Meal / party / packing lists → LLM decompose + Kroger vs Walmart compare.
+GROCERY_COMPARE_HINTS = re.compile(
+    r"\b("
+    r"which store|best store|where should i shop|where to buy|where can i buy|"
+    r"compare|cheaper|cheapest|"
+    r"party|meal|dinner|breakfast|lunch|brunch|recipe|recipes|ingredients|"
+    r"bbq|barbecue|cookout|grill|"
+    r"taco|tacos|pizza night|pasta night|latte|chai|smoothie|milkshake|"
+    r"pbj|pb&j|peanut butter|"
+    r"birthday|celebration|gathering|get together|"
+    r"grocery list|shopping list|what do i need|"
+    r"throw a|host(?:ing)?(?:\s+a)?|planning to host|feed \d+|serve \d+|"
+    r"for \d+\s+(?:people|guests|friends|kids|persons)|"
+    r"for \d+\s+of\s+my\s+(?:friends|guests|kids)|"
+    r"for my (?:kids|friends|guests)|"
+    r"camp|camping|pack essentials|weekend trip|"
+    r"kroger|walmart"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Electronics / affiliate catalog products → open AI Search (all merchants).
+PRODUCT_SEARCH_HINTS = re.compile(
+    r"\b("
+    r"solar|charger|power\s*station|anker|solix|portable\s+power|"
+    r"generator|battery\s+bank|inverter|"
+    r"electronics|laptop|headphones|earbuds|smartwatch|"
+    r"rakuten|affiliate"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def should_compare(query: str, mode: str = "auto") -> bool:
-    """Route chat through LLM decompose → AI Search (store compare).
+    """Choose store-compare vs open catalog search.
 
-    Auto/compare always use the planner so natural-language requests (camping,
-    parties, recipes) never dump the raw sentence into keyword search.
-    Explicit mode=search keeps the legacy single-query search path.
+    Compare only searches Kroger/Walmart. Affiliate ads (e.g. Anker Solix via
+    Rakuten) live under other merchants, so product queries must use search.
     """
-    _ = query  # reserved for future intent overrides
     mode = (mode or "auto").lower().strip()
     if mode == "search":
         return False
-    return True
+    if mode == "compare":
+        return True
+
+    q = query or ""
+    product = bool(PRODUCT_SEARCH_HINTS.search(q))
+    grocery = bool(GROCERY_COMPARE_HINTS.search(q))
+
+    if product and not grocery:
+        return False
+    if grocery:
+        return True
+
+    # Short product-style queries → full-catalog search; longer plans → compare.
+    return len(q.split()) > 6
