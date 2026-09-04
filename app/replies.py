@@ -1,34 +1,30 @@
 from __future__ import annotations
 
-import httpx
-
 from app.config import Settings, get_settings
+from app.llm_client import LLMNotConfiguredError, complete_text, is_decompose_configured
 from app.models import SearchResultItem
 
-SYSTEM_PROMPT = """You are DealFinder, a concise shopping assistant.
+SYSTEM_PROMPT = """You are DealFinder, a helpful shopping assistant.
 Use ONLY the deals provided in the context. Do not invent products, prices, or URLs.
-Keep replies to 2-3 sentences. Mention the best matching deal by name and price when relevant."""
+Write a natural 2-4 sentence reply tailored to the user's request.
+Mention the best matching deal by name and price.
+Do NOT use canned phrases like "I found N deals for ..." or "Click any deal card below".
+Do NOT include markdown links or raw URLs — product cards carry the tracking links."""
 
 
 def build_template_reply(query: str, results: list[SearchResultItem]) -> str:
+    """Last-resort fallback when no LLM is configured."""
     if not results:
         return (
             f'I could not find deals matching "{query}". '
-            "Try searching for tea, soap, coffee, or household items."
+            "Try a more specific product name or browse related categories."
         )
 
-    count = len(results)
-    plural = "deal" if count == 1 else "deals"
     top = results[0].ad
-    intro = f'I found {count} {plural} for "{query}".'
-
-    if results[0].score >= 1.5:
-        return (
-            f"{intro} The best match is [{top.title}]({top.url}) at {top.price}. "
-            "Click any deal card below to visit the partner site."
-        )
-
-    return f"{intro} Here are the closest matches I found. Click a card below to visit the partner site."
+    extras = ""
+    if len(results) > 1:
+        extras = f" I also found {len(results) - 1} related option(s) in the cards below."
+    return f"For \"{query}\", I'd start with {top.title} at {top.price}.{extras}"
 
 
 def _format_context(results: list[SearchResultItem]) -> str:
@@ -36,84 +32,40 @@ def _format_context(results: list[SearchResultItem]) -> str:
     for i, item in enumerate(results, start=1):
         ad = item.ad
         lines.append(
-            f"{i}. {ad.title} — {ad.price} ({ad.category})\n"
-            f"   {ad.description}\n"
-            f"   URL: {ad.url}"
+            f"{i}. {ad.title} — {ad.price} ({ad.merchant or ad.category})\n"
+            f"   {ad.description}"
         )
     return "\n".join(lines)
 
 
-async def generate_reply(query: str, results: list[SearchResultItem], settings: Settings | None = None) -> str:
+async def generate_reply(
+    query: str,
+    results: list[SearchResultItem],
+    settings: Settings | None = None,
+) -> str:
+    """Always prefer the configured decompose LLM; template only if LLM is unavailable."""
     settings = settings or get_settings()
-    provider = settings.reply_provider.lower().strip()
 
     if not results:
         return build_template_reply(query, results)
 
-    if provider == "ollama":
-        try:
-            return await _ollama_reply(query, results, settings)
-        except Exception:
-            return build_template_reply(query, results)
+    provider = settings.reply_provider.lower().strip()
+    # template/auto → use Azure/Ollama whenever decompose LLM is configured
+    use_llm = provider in {"auto", "template", "azure_openai", "ollama", ""}
 
-    if provider == "azure_openai":
+    if use_llm and is_decompose_configured(settings):
         try:
-            return await _azure_openai_reply(query, results, settings)
-        except Exception:
-            return build_template_reply(query, results)
+            return await complete_text(
+                SYSTEM_PROMPT,
+                (
+                    f"User query: {query}\n\n"
+                    f"Selected deals (best first):\n{_format_context(results)}\n\n"
+                    "Write the reply now."
+                ),
+                settings=settings,
+                max_tokens=280,
+            )
+        except (LLMNotConfiguredError, Exception):
+            pass
 
     return build_template_reply(query, results)
-
-
-async def _ollama_reply(query: str, results: list[SearchResultItem], settings: Settings) -> str:
-    prompt = (
-        f"User query: {query}\n\n"
-        f"Available deals:\n{_format_context(results)}\n\n"
-        "Write a helpful reply."
-    )
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{settings.ollama_base_url.rstrip('/')}/api/chat",
-            json={
-                "model": settings.ollama_model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 150},
-            },
-        )
-        response.raise_for_status()
-        return response.json()["message"]["content"].strip()
-
-
-async def _azure_openai_reply(query: str, results: list[SearchResultItem], settings: Settings) -> str:
-    if not settings.azure_openai_endpoint or not settings.azure_openai_api_key:
-        raise RuntimeError("Azure OpenAI is not configured")
-
-    prompt = (
-        f"User query: {query}\n\n"
-        f"Available deals:\n{_format_context(results)}\n\n"
-        "Write a helpful reply."
-    )
-    url = (
-        f"{settings.azure_openai_endpoint.rstrip('/')}/openai/deployments/"
-        f"{settings.azure_openai_deployment}/chat/completions"
-        f"?api-version={settings.azure_openai_api_version}"
-    )
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url,
-            headers={"api-key": settings.azure_openai_api_key},
-            json={
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 150,
-            },
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()

@@ -57,13 +57,30 @@ async def complete_json(
     provider = resolve_decompose_provider(settings)
 
     if provider == "azure_openai":
-        text = await _azure_openai_complete(system, user, settings, max_tokens)
+        text = await _azure_openai_complete(system, user, settings, max_tokens, json_mode=True)
     elif provider == "ollama":
-        text = await _ollama_complete(system, user, settings, max_tokens)
+        text = await _ollama_complete(system, user, settings, max_tokens, json_mode=True)
     else:
         raise LLMNotConfiguredError(LLM_SETUP_HINT)
 
     return _parse_json(text)
+
+
+async def complete_text(
+    system: str,
+    user: str,
+    settings: Settings | None = None,
+    max_tokens: int = 400,
+) -> str:
+    """Free-form chat completion using the same provider as decompose."""
+    settings = settings or get_settings()
+    provider = resolve_decompose_provider(settings)
+
+    if provider == "azure_openai":
+        return await _azure_openai_complete(system, user, settings, max_tokens, json_mode=False)
+    if provider == "ollama":
+        return await _ollama_complete(system, user, settings, max_tokens, json_mode=False)
+    raise LLMNotConfiguredError(LLM_SETUP_HINT)
 
 
 def _parse_json(text: str) -> dict[str, Any]:
@@ -74,26 +91,40 @@ def _parse_json(text: str) -> dict[str, Any]:
     return json.loads(text)
 
 
-async def _ollama_complete(system: str, user: str, settings: Settings, max_tokens: int) -> str:
+async def _ollama_complete(
+    system: str,
+    user: str,
+    settings: Settings,
+    max_tokens: int,
+    json_mode: bool = True,
+) -> str:
+    payload: dict[str, Any] = {
+        "model": settings.ollama_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2 if not json_mode else 0.1, "num_predict": max_tokens},
+    }
+    if json_mode:
+        payload["format"] = "json"
     async with httpx.AsyncClient(timeout=90.0) as client:
         response = await client.post(
             f"{settings.ollama_base_url.rstrip('/')}/api/chat",
-            json={
-                "model": settings.ollama_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "stream": False,
-                "format": "json",
-                "options": {"temperature": 0.1, "num_predict": max_tokens},
-            },
+            json=payload,
         )
         response.raise_for_status()
         return response.json()["message"]["content"].strip()
 
 
-async def _azure_openai_complete(system: str, user: str, settings: Settings, max_tokens: int) -> str:
+async def _azure_openai_complete(
+    system: str,
+    user: str,
+    settings: Settings,
+    max_tokens: int,
+    json_mode: bool = True,
+) -> str:
     base = settings.azure_openai_endpoint.rstrip("/")
     # Strip Foundry project path if user pasted project URL by mistake
     if "/api/projects/" in base:
@@ -109,10 +140,11 @@ async def _azure_openai_complete(system: str, user: str, settings: Settings, max
     ]
     body: dict[str, Any] = {
         "messages": messages,
-        "temperature": 0.1,
+        "temperature": 0.2 if not json_mode else 0.1,
         "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
     }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
 
     if style == "v1":
         url = f"{base}/openai/v1/chat/completions"

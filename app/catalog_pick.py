@@ -31,11 +31,14 @@ PICK_SYSTEM = """You pick deals that match THIS user's use case — different qu
 Return JSON only:
 {
   "selected_ids": ["id1", "id2"],
-  "reply": "2-3 sentences naming the best pick and its price, and why it fits. Do NOT include markdown links or any URLs."
+  "reply": "natural 2-4 sentence shopping assistant answer"
 }
 
 Hard rules:
 - selected_ids: best first, max 5, ONLY from the candidate list.
+- reply: conversational and specific to THIS request (why this product fits). Name the top pick and price in prose.
+  Do NOT use template phrases like "I found N deals", "best match is", or "click any deal card".
+  Do NOT include markdown links or URLs.
 - Obey use_case and size_hint strictly:
   - portable_outdoor / day_hike / weekend_camping: choose compact portable power stations or small portable panels
     (e.g. C1000, C2000, PS100/PS200). REJECT whole-home kits (F3000/F3800, multi-kWh expansion + 4× rigid panels)
@@ -44,7 +47,6 @@ Hard rules:
 - Prefer real positive prices; skip $0/blank when priced alternatives exist.
 - Never invent products, prices, or URLs.
 - Do NOT reuse a home-backup megakit answer for a hiking query (or vice versa).
-- Never paste click.linksynergy.com or other URLs in reply — truncated affiliate links break with a processing error.
 - If nothing fits, selected_ids: [] and say what is missing."""
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -52,9 +54,8 @@ _BARE_AFFILIATE_RE = re.compile(r"https?://click\.linksynergy\.com/\S+")
 
 
 def _attach_tracking_links(reply: str, selected: list[SearchResultItem]) -> str:
-    """Ensure reply links use full catalog tracking URLs (incl. murl), never truncated ones."""
+    """Inject a single trusted tracking link without overwriting the LLM voice."""
     text = (reply or "").strip()
-    # Drop any LLM-emitted links/URLs; we re-attach trusted ones from selected ads.
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _BARE_AFFILIATE_RE.sub("", text)
     text = re.sub(r"[ \t]+\n", "\n", text).strip()
@@ -63,10 +64,12 @@ def _attach_tracking_links(reply: str, selected: list[SearchResultItem]) -> str:
         return text
 
     best = selected[0].ad
-    link_line = f"Best match: [{best.title}]({best.url}) at {best.price}."
-    if best.title.lower() in text.lower():
-        return f"{text}\n\n{link_line}"
-    return f"{text}\n\n{link_line}"
+    linked = f"[{best.title}]({best.url})"
+    # Prefer weaving the link into an existing title mention.
+    if best.title in text:
+        text = text.replace(best.title, linked, 1)
+        return text
+    return f"{text}\n\nShop: {linked} — {best.price}."
 
 # Title cues used to demote/promote before the LLM sees the list.
 _HOME_SCALE = (

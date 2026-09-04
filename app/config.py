@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     min_reranker_score: float = 1.5
     meaning_query_terms: str = "discount,deal,sale,cheap,savings,offer,promo,off"
 
-    # Reply generation for simple search: template | ollama | azure_openai
-    reply_provider: str = "template"
+    # Reply generation: auto | template | ollama | azure_openai
+    # auto/template both use Azure/Ollama when configured (template is last-resort fallback only)
+    reply_provider: str = "auto"
 
     # Ingredient decomposition for store compare: auto | azure_openai | ollama | template
     # auto = use Azure OpenAI if configured, else Ollama; template = heuristics only (limited)
