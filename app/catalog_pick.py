@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.config import Settings, get_settings
 from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_configured
 from app.models import SearchResultItem
@@ -29,7 +31,7 @@ PICK_SYSTEM = """You pick deals that match THIS user's use case — different qu
 Return JSON only:
 {
   "selected_ids": ["id1", "id2"],
-  "reply": "2-3 sentences. Name the best pick and price with markdown [title](url) from candidates. Explain briefly why it fits THIS request."
+  "reply": "2-3 sentences naming the best pick and its price, and why it fits. Do NOT include markdown links or any URLs."
 }
 
 Hard rules:
@@ -42,7 +44,29 @@ Hard rules:
 - Prefer real positive prices; skip $0/blank when priced alternatives exist.
 - Never invent products, prices, or URLs.
 - Do NOT reuse a home-backup megakit answer for a hiking query (or vice versa).
+- Never paste click.linksynergy.com or other URLs in reply — truncated affiliate links break with a processing error.
 - If nothing fits, selected_ids: [] and say what is missing."""
+
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_BARE_AFFILIATE_RE = re.compile(r"https?://click\.linksynergy\.com/\S+")
+
+
+def _attach_tracking_links(reply: str, selected: list[SearchResultItem]) -> str:
+    """Ensure reply links use full catalog tracking URLs (incl. murl), never truncated ones."""
+    text = (reply or "").strip()
+    # Drop any LLM-emitted links/URLs; we re-attach trusted ones from selected ads.
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _BARE_AFFILIATE_RE.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text).strip()
+
+    if not selected:
+        return text
+
+    best = selected[0].ad
+    link_line = f"Best match: [{best.title}]({best.url}) at {best.price}."
+    if best.title.lower() in text.lower():
+        return f"{text}\n\n{link_line}"
+    return f"{text}\n\n{link_line}"
 
 # Title cues used to demote/promote before the LLM sees the list.
 _HOME_SCALE = (
@@ -210,7 +234,7 @@ async def pick_relevant_ads(
             lines.append(
                 f"- id={ad.id} | scale={scale} | {ad.title} | price={ad.price} | "
                 f"merchant={ad.merchant} | category={ad.category}\n"
-                f"  {ad.description[:240]}\n  url={ad.url}"
+                f"  {ad.description[:240]}"
             )
         try:
             data = await complete_json(
@@ -236,16 +260,18 @@ async def pick_relevant_ads(
                     break
             reply = str(data.get("reply") or "").strip()
             if selected and reply:
-                return selected, reply
+                return selected, _attach_tracking_links(reply, selected)
             if selected:
-                return selected, await generate_reply(query, selected, settings)
+                generated = await generate_reply(query, selected, settings)
+                return selected, _attach_tracking_links(generated, selected)
             if reply:
                 return [], reply
         except (LLMNotConfiguredError, Exception):
             pass
 
     picked = _heuristic_pick(candidates, limit, use_case=use_case, size_hint=size_hint)
-    return picked, await generate_reply(query, picked, settings)
+    generated = await generate_reply(query, picked, settings)
+    return picked, _attach_tracking_links(generated, picked)
 
 
 async def llm_catalog_search(
