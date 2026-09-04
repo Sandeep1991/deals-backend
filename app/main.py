@@ -16,11 +16,11 @@ from app.models import (
     SearchRequest,
     SearchResponse,
 )
-from app.advisory import build_advisory_reply, format_missing_catalog_items
-from app.intent import is_non_grocery_query, out_of_scope_reply, results_match_query
+from app.advisory import build_advisory_reply
+from app.catalog_pick import llm_catalog_search
+from app.intent import is_non_grocery_query, out_of_scope_reply
 from app.llm_client import LLMNotConfiguredError, resolve_decompose_provider
 from app.party_planner.graph import run_store_comparison
-from app.replies import generate_reply
 from app.routing import should_compare
 from app.search import SearchService, SearchNotConfiguredError
 
@@ -79,26 +79,16 @@ def _compare_has_catalog_prices(compare_response: CompareResponse) -> bool:
 
 
 async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
-    results = search_service.search(query, limit=limit)
-    results = [
-        item
-        for item in results
-        if results_match_query(
-            query,
-            item.ad.title,
-            item.ad.keywords,
-            item.ad.description,
-            item.ad.category,
-        )
-    ]
+    # LLM plans search terms → AI Search → LLM picks relevant ads (not first-hit ranking).
+    results, reply = await llm_catalog_search(query, search_service, limit=limit)
     if not results:
-        try:
-            reply = await build_advisory_reply(query, in_catalog_scope=True)
-        except Exception:
-            reply = out_of_scope_reply(query)
+        if not reply:
+            try:
+                reply = await build_advisory_reply(query, in_catalog_scope=True)
+            except Exception:
+                reply = out_of_scope_reply(query)
         return ChatResponse(query=query, reply=reply, ads=[], results=[], mode="advisory")
 
-    reply = await generate_reply(query, results)
     return ChatResponse(
         query=query,
         reply=reply,
