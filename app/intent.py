@@ -38,6 +38,9 @@ STOPWORDS = {
     "need", "want", "get", "buy", "purchase", "find", "help",
     "items", "item", "list", "should", "could", "would", "can",
     "kid", "kids", "child", "children", "returning", "back",
+    # Natural-language packing/trip words — do not match product "pack" sizes
+    "going", "spend", "weekend", "camp", "camping", "pack", "packing",
+    "essentials", "essential", "trip", "travel", "please", "am",
 }
 
 
@@ -60,7 +63,9 @@ def results_match_query(query: str, title: str, keywords: str, description: str,
     """Require overlap between query and ad text to avoid semantic false positives."""
     tokens = significant_tokens(query)
     if not tokens:
-        return True
+        # Pure natural-language / stopword-only queries must not match random ads
+        # (e.g. "help me pack" → "Big Pack" ground beef).
+        return False
     haystack = f"{title} {keywords} {description} {category}".lower()
     return any(token in haystack for token in tokens)
 

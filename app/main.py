@@ -73,10 +73,9 @@ def health() -> HealthResponse:
 async def chat(request: ChatRequest) -> ChatResponse:
     require_search()
 
+    # Default (auto/compare): LLM decomposes the request, then AI Search prices each item.
+    # mode=search keeps a direct catalog lookup for short product queries.
     if should_compare(request.query, request.mode):
-        if is_non_grocery_query(request.query):
-            reply = await build_advisory_reply(request.query)
-            return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="advisory")
         try:
             comparison = await run_store_comparison(request.query, search_service)
             compare_response = to_compare_response(comparison)

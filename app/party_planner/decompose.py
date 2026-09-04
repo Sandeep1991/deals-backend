@@ -4,11 +4,13 @@ import re
 
 from app.party_planner.state import AlternativeOption, ShoppingItem, ShoppingPlan
 
-DECOMPOSE_SYSTEM = """You are a grocery shopping planner. Break the user's request into grocery items to buy at a store.
+DECOMPOSE_SYSTEM = """You are a shopping planner for Kroger and Walmart (grocery + household).
+Break the user's request into concrete products to buy — meals, drinks, packing lists,
+camping/weekend essentials, parties, or single items.
 
 Return JSON with this exact shape:
 {
-  "event_summary": "short summary of the event or meal",
+  "event_summary": "short summary of the event or need",
   "people_count": 6,
   "required_items": [
     {"name": "taco shells", "search_terms": ["taco shells"], "quantity": 1}
@@ -28,12 +30,18 @@ Pack-size examples:
 - "Jarritos" or soda for 6 people → quantity 6 (one bottle per person)
 - "bell peppers" for 6 people → quantity 1.5 (meaning ~1.5 lb, sold by weight)
 - "chai tea latte for 10" → tea, milk, sweetener/honey, spices (or concentrate), cups if needed
+- "weekend camping essentials" → bottled water, snacks/trail mix, trash bags, paper towels,
+  sunscreen, insect repellent, batteries, matches/lighter (skip specialty gear we cannot sell
+  like tents/sleeping bags unless the user named them)
 
 Rules:
-- required_items: every ingredient or product needed (for drinks include base, dairy/alt milk, sweetener, spices).
+- required_items: every product needed (for drinks include base, dairy/alt milk, sweetener, spices).
+- Prefer items commonly sold at grocery/supercenters. For packing/camping, favor consumables
+  and household staples over specialty outdoor gear.
 - alternative_options: OR choices (same label = pick cheapest per store).
-- search_terms: 1-3 terms that match supermarket ads.
-- Think: meals/drinks → proteins, carbs, produce, dairy, condiments, beverages, spices."""
+- search_terms: 1-3 short supermarket search phrases (not the full user sentence).
+- Think: meals/drinks → proteins, carbs, produce, dairy, condiments, beverages, spices;
+  trips/packing → water, food, hygiene, cleanup, safety basics."""
 
 
 def heuristic_decompose(query: str) -> ShoppingPlan:
@@ -87,6 +95,18 @@ def heuristic_decompose(query: str) -> ShoppingPlan:
                         ShoppingItem(name="chocolate syrup", search_terms=["hershey syrup", "chocolate syrup"]),
                     ],
                 ),
+            ]
+        )
+
+    if any(token in q for token in ("camp", "camping", "campsite", "pack essentials", "weekend trip")):
+        required.extend(
+            [
+                ShoppingItem(name="bottled water", search_terms=["bottled water", "water bottles"]),
+                ShoppingItem(name="trail mix", search_terms=["trail mix", "snacks"]),
+                ShoppingItem(name="trash bags", search_terms=["trash bags"]),
+                ShoppingItem(name="paper towels", search_terms=["paper towels"]),
+                ShoppingItem(name="sunscreen", search_terms=["sunscreen"]),
+                ShoppingItem(name="insect repellent", search_terms=["insect repellent", "bug spray"]),
             ]
         )
 
