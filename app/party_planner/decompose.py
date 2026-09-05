@@ -99,16 +99,18 @@ def heuristic_decompose(query: str) -> ShoppingPlan:
         )
 
     if any(token in q for token in ("camp", "camping", "campsite", "pack essentials", "weekend trip")):
-        required.extend(
-            [
-                ShoppingItem(name="bottled water", search_terms=["bottled water", "water bottles"]),
-                ShoppingItem(name="trail mix", search_terms=["trail mix", "snacks"]),
-                ShoppingItem(name="trash bags", search_terms=["trash bags"]),
-                ShoppingItem(name="paper towels", search_terms=["paper towels"]),
-                ShoppingItem(name="sunscreen", search_terms=["sunscreen"]),
-                ShoppingItem(name="insect repellent", search_terms=["insect repellent", "bug spray"]),
-            ]
-        )
+        # Don't treat solar/RV gear queries as grocery packing lists.
+        if not any(t in q for t in ("solar", "anker", "solix", "power station", "generator", "rv", "battery")):
+            required.extend(
+                [
+                    ShoppingItem(name="bottled water", search_terms=["bottled water", "water bottles"]),
+                    ShoppingItem(name="trail mix", search_terms=["trail mix", "snacks"]),
+                    ShoppingItem(name="trash bags", search_terms=["trash bags"]),
+                    ShoppingItem(name="paper towels", search_terms=["paper towels"]),
+                    ShoppingItem(name="sunscreen", search_terms=["sunscreen"]),
+                    ShoppingItem(name="insect repellent", search_terms=["insect repellent", "bug spray"]),
+                ]
+            )
 
     if not required and not alternatives:
         words = re.findall(r"[a-zA-Z]+", q)

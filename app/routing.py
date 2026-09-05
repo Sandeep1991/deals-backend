@@ -17,7 +17,9 @@ GROCERY_COMPARE_HINTS = re.compile(
     r"for \d+\s+(?:people|guests|friends|kids|persons)|"
     r"for \d+\s+of\s+my\s+(?:friends|guests|kids)|"
     r"for my (?:kids|friends|guests)|"
-    r"camp|camping|pack essentials|weekend trip|"
+    r"pack essentials|weekend trip|"
+    # Grocery packing only when not about gear/solar (see PRODUCT_SEARCH_HINTS priority)
+    r"camp(?:ing)?\s+(?:food|groceries|snacks|essentials)|"
     r"kroger|walmart"
     r")\b",
     re.IGNORECASE,
@@ -27,7 +29,8 @@ GROCERY_COMPARE_HINTS = re.compile(
 PRODUCT_SEARCH_HINTS = re.compile(
     r"\b("
     r"solar|charger|power\s*station|anker|solix|portable\s+power|"
-    r"generator|battery\s+bank|inverter|"
+    r"generator|battery\s+bank|inverter|power\s*bank|"
+    r"rv\b|camper\b|van\s*life|"
     r"electronics|laptop|headphones|earbuds|smartwatch|"
     r"rakuten|affiliate"
     r")\b",
@@ -40,6 +43,9 @@ def should_compare(query: str, mode: str = "auto") -> bool:
 
     Compare only searches Kroger/Walmart. Affiliate ads (e.g. Anker Solix via
     Rakuten) live under other merchants, so product queries must use search.
+
+    Product intent wins when both product and grocery hints appear
+    (e.g. "portable solar for night camping in rvs").
     """
     mode = (mode or "auto").lower().strip()
     if mode == "search":
@@ -51,7 +57,7 @@ def should_compare(query: str, mode: str = "auto") -> bool:
     product = bool(PRODUCT_SEARCH_HINTS.search(q))
     grocery = bool(GROCERY_COMPARE_HINTS.search(q))
 
-    if product and not grocery:
+    if product:
         return False
     if grocery:
         return True
