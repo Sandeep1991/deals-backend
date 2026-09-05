@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from app.config import Settings, get_settings
-from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_configured
+from app.llm_client import LLMNotConfiguredError, complete_json, complete_text, is_decompose_configured
 from app.models import SearchResultItem
 from app.pricing import parse_price
 from app.replies import build_template_reply, generate_reply
@@ -13,48 +13,55 @@ PLAN_SYSTEM = """You turn a shopper request into catalog search queries for affi
 Return JSON only:
 {
   "intent": "one sentence of what they want",
-  "use_case": "home_backup|portable_outdoor|solar_panels|ev_charging|general",
-  "size_hint": "phone_powerbank|day_hike|weekend_camping|apartment|family_home|whole_home",
+  "use_case": "home_backup|portable_outdoor|solar_panels|ev_charging|rv_camping|general",
+  "size_hint": "phone_powerbank|day_hike|weekend_camping|rv_overnight|apartment|family_home|whole_home",
   "search_terms": ["term1", "term2", "term3"],
   "avoid_terms": ["optional words that indicate wrong products"]
 }
 
 Rules for search_terms (1-4 short phrases that match product titles):
-- portable / hike / backpacking / camping day-trip → "portable power station", "C1000", "PS100", "solar panel portable"
+- portable / hike / backpacking / camping / RV overnight → "portable power station", "C1000", "PS100"
+  (for night use prioritize power station; panels alone do not help at night)
   (NOT whole-home F3800 kits, NOT "4x 400W", NOT EV adapters)
 - family / home backup / house solar → "solar panel", "home backup", "power station solar panel"
 - solar panels only → "solar panel", "portable solar panel"
 - Do not invent brands unless the user named them.
 - Prefer concrete product-class terms over repeating the full user sentence."""
 
-PICK_SYSTEM = """You pick deals that match THIS user's use case — different queries must get different products when intent differs.
+PICK_SYSTEM = """You pick deals that match THIS user's use case.
 Return JSON only:
 {
-  "selected_ids": ["id1", "id2"],
-  "reply": "natural 2-4 sentence shopping assistant answer"
+  "selected_ids": ["id1", "id2"]
 }
 
 Hard rules:
-- selected_ids: best first, max 5, ONLY from the candidate list.
-- reply: conversational and specific to THIS request (why this product fits). Name the top pick and price in prose.
-  Do NOT use template phrases like "I found N deals", "best match is", or "click any deal card".
-  Do NOT include markdown links or URLs.
+- selected_ids: best first, max 5, ONLY from the candidate list. No reply field.
 - Obey use_case and size_hint strictly:
-  - portable_outdoor / day_hike / weekend_camping: choose compact portable power stations or small portable panels
-    (e.g. C1000, C2000, PS100/PS200). REJECT whole-home kits (F3000/F3800, multi-kWh expansion + 4× rigid panels)
-    unless no smaller option exists in the candidates.
-  - family_home / whole_home / home_backup: larger home backup + panel kits are OK; still prefer a sensible family size.
+  - portable_outdoor / day_hike / weekend_camping / RV: prefer portable power stations + portable panels
+    (C1000, C2000, PS100/PS200). For night use, a power station matters more than a panel alone.
+    REJECT whole-home kits (F3000/F3800, multi-kWh expansion + 4× rigid panels) unless nothing smaller exists.
+  - family_home / whole_home / home_backup: larger home backup + panel kits are OK.
 - Prefer real positive prices; skip $0/blank when priced alternatives exist.
-- Never invent products, prices, or URLs.
-- Do NOT reuse a home-backup megakit answer for a hiking query (or vice versa).
-- If nothing fits, selected_ids: [] and say what is missing."""
+- Never invent ids."""
+
+WRITE_REPLY_SYSTEM = """You are DealFinder — a sharp shopping advisor, not a product brochure.
+Write 3-5 sentences that actually answer the user's question using ONLY the selected deals.
+
+Rules:
+- Lead with advice for THEIR scenario, then name products and prices as supporting evidence.
+- Example: for "solar for night camping in an RV", explain that panels charge by day and a portable
+  power station covers night loads — then recommend a concrete station (+ panel if useful).
+- Sound like a knowledgeable friend. Vary wording. Never use: "I found N deals", "best match is",
+  "click any deal card", "compact and efficient choice", "outdoor adventures", "maximize energy".
+- Do not invent products, prices, or specs. Do not include markdown links or URLs.
+- If the selected gear is a poor fit, say so and suggest the best available option from the list."""
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _BARE_AFFILIATE_RE = re.compile(r"https?://click\.linksynergy\.com/\S+")
 
 
 def _attach_tracking_links(reply: str, selected: list[SearchResultItem]) -> str:
-    """Inject a single trusted tracking link without overwriting the LLM voice."""
+    """Weave one trusted tracking link into the LLM reply without a canned 'Shop:' footer."""
     text = (reply or "").strip()
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _BARE_AFFILIATE_RE.sub("", text)
@@ -65,11 +72,13 @@ def _attach_tracking_links(reply: str, selected: list[SearchResultItem]) -> str:
 
     best = selected[0].ad
     linked = f"[{best.title}]({best.url})"
-    # Prefer weaving the link into an existing title mention.
     if best.title in text:
-        text = text.replace(best.title, linked, 1)
-        return text
-    return f"{text}\n\nShop: {linked} — {best.price}."
+        return text.replace(best.title, linked, 1)
+    # Fallback: link the first priced title that appears in the prose
+    for item in selected:
+        if item.ad.title in text:
+            return text.replace(item.ad.title, f"[{item.ad.title}]({item.ad.url})", 1)
+    return f"{text} See {linked}."
 
 # Title cues used to demote/promote before the LLM sees the list.
 _HOME_SCALE = (
@@ -108,10 +117,11 @@ def _reorder_for_use_case(
     size_hint: str,
 ) -> list[SearchResultItem]:
     """Surface intent-fitting SKUs first so the LLM is less likely to latch onto megakits."""
-    portable_intent = use_case == "portable_outdoor" or size_hint in {
+    portable_intent = use_case in {"portable_outdoor", "rv_camping"} or size_hint in {
         "phone_powerbank",
         "day_hike",
         "weekend_camping",
+        "rv_overnight",
     }
     home_intent = use_case in {"home_backup", "solar_panels"} or size_hint in {
         "apartment",
@@ -212,6 +222,45 @@ def _heuristic_pick(
     return pool[:limit]
 
 
+async def write_catalog_reply(
+    query: str,
+    selected: list[SearchResultItem],
+    intent: str = "",
+    use_case: str = "general",
+    size_hint: str = "general",
+    settings: Settings | None = None,
+) -> str:
+    """Dedicated LLM pass: advise on the user's ask using the already-picked deals."""
+    settings = settings or get_settings()
+    if not selected:
+        return build_template_reply(query, [])
+
+    if is_decompose_configured(settings):
+        lines = []
+        for i, item in enumerate(selected, start=1):
+            ad = item.ad
+            lines.append(f"{i}. {ad.title} — {ad.price} ({ad.merchant})\n   {ad.description[:280]}")
+        try:
+            return await complete_text(
+                WRITE_REPLY_SYSTEM,
+                (
+                    f"User request: {query}\n"
+                    f"Intent: {intent or query}\n"
+                    f"use_case: {use_case}\n"
+                    f"size_hint: {size_hint}\n\n"
+                    f"Selected deals (best first):\n" + "\n".join(lines) + "\n\n"
+                    "Write the advice now."
+                ),
+                settings=settings,
+                max_tokens=360,
+                temperature=0.65,
+            )
+        except (LLMNotConfiguredError, Exception):
+            pass
+
+    return await generate_reply(query, selected, settings)
+
+
 async def pick_relevant_ads(
     query: str,
     candidates: list[SearchResultItem],
@@ -226,6 +275,7 @@ async def pick_relevant_ads(
         return [], build_template_reply(query, [])
 
     candidates = _reorder_for_use_case(candidates, use_case, size_hint)
+    selected: list[SearchResultItem] = []
 
     if is_decompose_configured(settings):
         lines: list[str] = []
@@ -251,30 +301,30 @@ async def pick_relevant_ads(
                     + "\n".join(lines)
                 ),
                 settings=settings,
-                max_tokens=900,
+                max_tokens=500,
             )
             by_id = {item.ad.id: item for item in candidates}
-            selected: list[SearchResultItem] = []
             for ad_id in data.get("selected_ids") or []:
                 hit = by_id.get(str(ad_id))
                 if hit and hit not in selected:
                     selected.append(hit)
                 if len(selected) >= limit:
                     break
-            reply = str(data.get("reply") or "").strip()
-            if selected and reply:
-                return selected, _attach_tracking_links(reply, selected)
-            if selected:
-                generated = await generate_reply(query, selected, settings)
-                return selected, _attach_tracking_links(generated, selected)
-            if reply:
-                return [], reply
         except (LLMNotConfiguredError, Exception):
-            pass
+            selected = []
 
-    picked = _heuristic_pick(candidates, limit, use_case=use_case, size_hint=size_hint)
-    generated = await generate_reply(query, picked, settings)
-    return picked, _attach_tracking_links(generated, picked)
+    if not selected:
+        selected = _heuristic_pick(candidates, limit, use_case=use_case, size_hint=size_hint)
+
+    reply = await write_catalog_reply(
+        query,
+        selected,
+        intent=intent,
+        use_case=use_case,
+        size_hint=size_hint,
+        settings=settings,
+    )
+    return selected, _attach_tracking_links(reply, selected)
 
 
 async def llm_catalog_search(
@@ -288,7 +338,12 @@ async def llm_catalog_search(
     intent, use_case, size_hint, terms = await plan_search_terms(query, settings=settings)
 
     # Extra portable-biased terms when hiking/camping so C1000/PS100 enter the pool.
-    if use_case == "portable_outdoor" or size_hint in {"phone_powerbank", "day_hike", "weekend_camping"}:
+    if use_case in {"portable_outdoor", "rv_camping"} or size_hint in {
+        "phone_powerbank",
+        "day_hike",
+        "weekend_camping",
+        "rv_overnight",
+    }:
         for extra in ("C1000", "portable power station", "PS100", "PS200"):
             if extra.lower() not in {t.lower() for t in terms}:
                 terms.append(extra)

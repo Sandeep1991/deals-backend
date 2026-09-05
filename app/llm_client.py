@@ -71,15 +71,20 @@ async def complete_text(
     user: str,
     settings: Settings | None = None,
     max_tokens: int = 400,
+    temperature: float = 0.2,
 ) -> str:
     """Free-form chat completion using the same provider as decompose."""
     settings = settings or get_settings()
     provider = resolve_decompose_provider(settings)
 
     if provider == "azure_openai":
-        return await _azure_openai_complete(system, user, settings, max_tokens, json_mode=False)
+        return await _azure_openai_complete(
+            system, user, settings, max_tokens, json_mode=False, temperature=temperature
+        )
     if provider == "ollama":
-        return await _ollama_complete(system, user, settings, max_tokens, json_mode=False)
+        return await _ollama_complete(
+            system, user, settings, max_tokens, json_mode=False, temperature=temperature
+        )
     raise LLMNotConfiguredError(LLM_SETUP_HINT)
 
 
@@ -97,7 +102,11 @@ async def _ollama_complete(
     settings: Settings,
     max_tokens: int,
     json_mode: bool = True,
+    temperature: float | None = None,
 ) -> str:
+    temp = 0.1 if json_mode else 0.2
+    if temperature is not None:
+        temp = temperature
     payload: dict[str, Any] = {
         "model": settings.ollama_model,
         "messages": [
@@ -105,7 +114,7 @@ async def _ollama_complete(
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "options": {"temperature": 0.2 if not json_mode else 0.1, "num_predict": max_tokens},
+        "options": {"temperature": temp, "num_predict": max_tokens},
     }
     if json_mode:
         payload["format"] = "json"
@@ -124,6 +133,7 @@ async def _azure_openai_complete(
     settings: Settings,
     max_tokens: int,
     json_mode: bool = True,
+    temperature: float | None = None,
 ) -> str:
     base = settings.azure_openai_endpoint.rstrip("/")
     # Strip Foundry project path if user pasted project URL by mistake
@@ -138,9 +148,12 @@ async def _azure_openai_complete(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    temp = 0.1 if json_mode else 0.2
+    if temperature is not None:
+        temp = temperature
     body: dict[str, Any] = {
         "messages": messages,
-        "temperature": 0.2 if not json_mode else 0.1,
+        "temperature": temp,
         "max_tokens": max_tokens,
     }
     if json_mode:

@@ -4,12 +4,11 @@ from app.config import Settings, get_settings
 from app.llm_client import LLMNotConfiguredError, complete_text, is_decompose_configured
 from app.models import SearchResultItem
 
-SYSTEM_PROMPT = """You are DealFinder, a helpful shopping assistant.
-Use ONLY the deals provided in the context. Do not invent products, prices, or URLs.
-Write a natural 2-4 sentence reply tailored to the user's request.
-Mention the best matching deal by name and price.
-Do NOT use canned phrases like "I found N deals for ..." or "Click any deal card below".
-Do NOT include markdown links or raw URLs — product cards carry the tracking links."""
+SYSTEM_PROMPT = """You are DealFinder — a sharp shopping advisor, not a brochure.
+Use ONLY the deals provided. Do not invent products, prices, or URLs.
+Answer the user's actual need in 3-5 natural sentences; weave in product names and prices as evidence.
+Do NOT use canned phrases like "I found N deals", "Click any deal card", "compact and efficient choice",
+or "outdoor adventures". No markdown links or raw URLs."""
 
 
 def build_template_reply(query: str, results: list[SearchResultItem]) -> str:
@@ -60,10 +59,11 @@ async def generate_reply(
                 (
                     f"User query: {query}\n\n"
                     f"Selected deals (best first):\n{_format_context(results)}\n\n"
-                    "Write the reply now."
+                    "Write the advice now."
                 ),
                 settings=settings,
-                max_tokens=280,
+                max_tokens=360,
+                temperature=0.65,
             )
         except (LLMNotConfiguredError, Exception):
             pass
