@@ -36,6 +36,8 @@ def _route_by_category(state: OrchestratorState) -> list[Send]:
             "mode": "",
             "comparison": None,
             "limit": limit,
+            "chat_id": state.get("chat_id") or "",
+            "history": list(state.get("history") or []),
         }
 
     if by_cat.get("grocery"):
@@ -109,7 +111,11 @@ async def run_orchestrator(
     query: str,
     search_service: SearchService,
     limit: int = 5,
+    chat_id: str = "",
+    history: list | None = None,
 ) -> OrchestratorState:
+    from app.orchestrator.memory import normalize_history
+
     graph = build_orchestrator_graph(search_service)
     result = await graph.ainvoke(
         {
@@ -122,6 +128,8 @@ async def run_orchestrator(
             "mode": "search",
             "comparison": None,
             "limit": limit,
+            "chat_id": chat_id or "",
+            "history": normalize_history(history, current_query=query),
         }
     )
     return result  # type: ignore[return-value]

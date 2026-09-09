@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, Field
@@ -35,6 +34,11 @@ def merge_category_results(
     return list(existing) + list(new)
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
 class OrchestratorState(TypedDict):
     query: str
     event_summary: str
@@ -45,3 +49,5 @@ class OrchestratorState(TypedDict):
     mode: str
     comparison: Optional[StoreComparison]
     limit: int
+    chat_id: str
+    history: list[ChatTurn]

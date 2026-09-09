@@ -69,7 +69,11 @@ def health() -> HealthResponse:
     )
 
 
-async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
+async def _catalog_search_response(
+    query: str,
+    limit: int,
+    chat_id: str | None = None,
+) -> ChatResponse:
     results, reply = await llm_catalog_search(query, search_service, limit=limit)
     if not results:
         if not reply:
@@ -77,7 +81,14 @@ async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
                 reply = await build_advisory_reply(query, in_catalog_scope=True)
             except Exception:
                 reply = out_of_scope_reply(query)
-        return ChatResponse(query=query, reply=reply, ads=[], results=[], mode="advisory")
+        return ChatResponse(
+            query=query,
+            reply=reply,
+            ads=[],
+            results=[],
+            mode="advisory",
+            chat_id=chat_id,
+        )
 
     return ChatResponse(
         query=query,
@@ -85,6 +96,7 @@ async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
         ads=[item.ad for item in results],
         results=results,
         mode="search",
+        chat_id=chat_id,
     )
 
 
@@ -105,6 +117,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 results=[],
                 mode="compare",
                 comparison=compare_response,
+                chat_id=request.chat_id,
             )
         except SearchNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -115,7 +128,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     if mode == "search":
         try:
-            return await _catalog_search_response(request.query, request.limit)
+            return await _catalog_search_response(
+                request.query, request.limit, chat_id=request.chat_id
+            )
         except SearchNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
@@ -123,7 +138,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     # Default auto: LangGraph orchestrator (LLM split → category agents → merge).
     try:
-        state = await run_orchestrator(request.query, search_service, limit=request.limit)
+        history = [m.model_dump() for m in (request.messages or [])]
+        state = await run_orchestrator(
+            request.query,
+            search_service,
+            limit=request.limit,
+            chat_id=request.chat_id or "",
+            history=history,
+        )
         payload = to_chat_payload(state)
         return ChatResponse(
             query=payload["query"],
@@ -132,6 +154,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             results=[],
             mode=payload["mode"],
             comparison=payload["comparison"],
+            chat_id=payload.get("chat_id") or request.chat_id,
         )
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

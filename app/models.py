@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -80,10 +80,20 @@ class CompareResponse(BaseModel):
     merchants: list[MerchantBasketOut] = []
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
 class ChatRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=20)
     mode: str = Field(default="auto", description="auto | search | compare")
+    chat_id: Optional[str] = Field(default=None, description="Browser session UUID")
+    messages: list[ChatMessage] = Field(
+        default_factory=list,
+        description="Prior turns for session memory (browser is source of truth)",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -93,6 +103,7 @@ class ChatResponse(BaseModel):
     results: list[SearchResultItem] = []
     mode: str = "search"
     comparison: Optional[CompareResponse] = None
+    chat_id: Optional[str] = None
 
 
 class SearchRequest(BaseModel):

@@ -13,6 +13,7 @@ so the shopper can open the deal. Do not invent or rewrite URLs.
 If grocery comparison exists, briefly mention which store is cheaper when clear and name
 2-4 of the priced grocery items (not just "snacks").
 If electronics and grocery both appear, cover both needs.
+If prior conversation is provided, answer as a follow-up in that thread.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""
 
 
@@ -112,6 +113,14 @@ async def merge_results_node(state: OrchestratorState) -> dict:
     comparison = grocery.comparison if grocery else None
 
     context_lines: list[str] = [f"User request: {query}", f"Summary: {summary}", ""]
+    history = list(state.get("history") or [])
+    if history:
+        from app.orchestrator.memory import format_history_block
+
+        block = format_history_block(history)
+        if block:
+            context_lines.insert(0, block)
+            context_lines.insert(1, "")
     for result in results:
         context_lines.append(f"## {result.category}")
         if result.reply_fragment:
@@ -164,4 +173,5 @@ def to_chat_payload(state: OrchestratorState) -> dict:
         "ads": state.get("ads") or [],
         "mode": state.get("mode") or "search",
         "comparison": compare_out,
+        "chat_id": state.get("chat_id") or None,
     }
