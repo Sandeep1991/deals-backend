@@ -1,6 +1,6 @@
 # DealFinder API (deals-backend)
 
-FastAPI backend for DealFinder: routes natural-language shopping questions through an LLM, retrieves deals from Azure AI Search, and returns compare baskets or ranked affiliate ads.
+FastAPI backend for DealFinder: a LangGraph orchestrator splits each question into category items, fans out to specialized agents, retrieves deals from Azure AI Search (and optional merchant APIs), then merges one reply.
 
 Frontend repo: [Sandeep1991/deals](https://github.com/Sandeep1991/deals)  
 Ingest / affiliate feeds: [Sandeep1991/deals-ingest](https://github.com/Sandeep1991/deals-ingest)
@@ -8,65 +8,56 @@ Ingest / affiliate feeds: [Sandeep1991/deals-ingest](https://github.com/Sandeep1
 ## Architecture
 
 ```
-                    ┌─────────────────────┐
-  React (deals) ──► │  FastAPI /api/chat  │
-                    └─────────┬───────────┘
-                              │
-                    ┌─────────▼───────────┐
-                    │  routing.should_    │
-                    │  compare(query)     │
-                    └─────────┬───────────┘
-               ┌──────────────┼──────────────┐
-               │              │              │
-        grocery/party    product/affiliate   stationery /
-        /meal planning   (solar, Anker…)    out-of-scope
-               │              │              │
-               ▼              ▼              ▼
-        LangGraph planner  catalog_pick   advisory LLM
-        (party_planner)    (LLM → Search  (list only)
-               │            → LLM reply)
-               │              │
-               ▼              ▼
-        Azure AI Search   Azure AI Search
-        merchant=Kroger   all merchants
-        / Walmart         (e.g. Anker Solix
-               │           via Rakuten)
-               ▼              ▼
-        mode=compare      mode=search
-        store baskets     ranked ads + advice
+                         ┌──────────────────────┐
+   React (deals) ──────► │  FastAPI /api/chat   │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ split_query (LLM)    │
+                         │ items + categories   │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │ LangGraph Send route │
+                         └──────────┬───────────┘
+              ┌─────────────┬───────┴───────┬─────────────┐
+              ▼             ▼               ▼             ▼
+        grocery_agent  electronics    clothing_agent  stationery /
+        Search→API→web  catalog_pick   Search/notes   advisory
+        Kroger/Walmart  (Solix/etc.)
+              │             │               │             │
+              └─────────────┴───────┬───────┴─────────────┘
+                                    ▼
+                         ┌──────────────────────┐
+                         │ merge_results (LLM)  │
+                         │ mode=compare|search  │
+                         │ |mixed|advisory      │
+                         └──────────────────────┘
 ```
 
 ### `/api/chat` request flow
 
-1. **Route** (`app/routing.py`)
-   - **Product / affiliate** hints (`solar`, `anker`, `solix`, `rv`, …) → full-catalog search (product intent wins even if “camping” appears).
-   - **Grocery / party / recipe** hints → Kroger vs Walmart store comparison.
-   - Explicit `mode=search` | `mode=compare` overrides auto.
+1. **`mode=auto` (default)** — LangGraph orchestrator in `app/orchestrator/`
+   - LLM **split_query** → composite items tagged `grocery` | `electronics` | `clothing` | `stationery` | `other`
+   - **Send** fan-out to category agents in parallel
+   - **merge_results** builds one reply + ads (+ grocery comparison when present)
 
-2. **Compare path** (`app/party_planner/`)
-   - LLM decomposes the request into a shopping list (Azure OpenAI / Ollama; heuristic fallback only if LLM fails).
-   - LangGraph: `decompose` → `fetch_prices` → `compare`.
-   - Prices from Azure AI Search filtered by merchant; optional web fallback for missing items.
-   - Returns `mode=compare` with per-store baskets. If nothing priced in catalog, falls back to catalog search.
+2. **Grocery agent** — Azure AI Search (merchant filter) → optional Kroger/Walmart product APIs → DuckDuckGo web fallback → Kroger vs Walmart baskets
 
-3. **Catalog / affiliate path** (`app/catalog_pick.py`)
-   - LLM plans use-case + search terms.
-   - Azure AI Search retrieves candidates (all merchants).
-   - LLM **picks** relevant ad IDs (use-case aware: portable vs home backup).
-   - Separate LLM **reply** pass writes scenario-specific advice (not first-hit / brochure text).
-   - Tracking links attached from catalog URLs (full Rakuten `murl` deep links).
-   - Returns `mode=search`.
+3. **Electronics agent** — wraps `catalog_pick` (LLM plan → Search → LLM pick → LLM reply) for Solix/affiliate ads
 
-4. **Advisory path** (`app/advisory.py`)
-   - Non-grocery lists (e.g. stationery) when search is not appropriate → shopping list without deal cards.
+4. **Clothing / stationery** — Search first; stationery falls back to advisory lists when empty
+
+5. **Explicit overrides** — `mode=compare` forces grocery LangGraph; `mode=search` forces catalog_pick only
 
 ### Supporting services
 
 | Piece | Role |
 |---|---|
-| Azure AI Search (`ads` index) | Grocery staples (Kroger/Walmart) + affiliate products (e.g. Anker Solix / Rakuten) |
-| Azure OpenAI / Ollama (`app/llm_client.py`) | Decompose, catalog plan/pick/reply, advisory |
-| `deals-ingest` | Fetches Rakuten Solix feed, filters sold-out via merchant site, upserts/deletes Search docs |
+| Azure AI Search (`ads` index) | Grocery staples + affiliate products (e.g. Anker Solix / Rakuten) |
+| Azure OpenAI / Ollama (`app/llm_client.py`) | Split, pick/reply, merge, advisory |
+| Kroger / Walmart APIs (`app/merchants/`) | Optional grocery price step when env keys set |
+| `deals-ingest` | Rakuten Solix feed, sold-out filter, Search upsert/delete |
 
 ## Azure App Service deployment
 
@@ -133,8 +124,8 @@ API docs: http://localhost:8000/docs
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Health + search/LLM provider status |
-| POST | `/api/chat` | Routed chat: compare, catalog search, or advisory |
-| POST | `/api/compare` | Force store comparison (Kroger vs Walmart) |
+| POST | `/api/chat` | Orchestrated chat (auto) or forced compare/search |
+| POST | `/api/compare` | Force grocery store comparison |
 | POST | `/api/search` | Raw Azure AI Search (no LLM) |
 | POST | `/api/ads` | Bulk upsert ads |
 | PUT | `/api/ads/{id}` | Upsert single ad |
@@ -146,14 +137,15 @@ See `.env.example`. Important:
 
 - **Search:** `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_INDEX`, `AZURE_SEARCH_SEMANTIC_CONFIG`
 - **LLM:** `DECOMPOSE_PROVIDER=auto`, `REPLY_PROVIDER=auto`, plus `AZURE_OPENAI_*` (or Ollama)
+- **Optional grocery APIs:** `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`, `KROGER_LOCATION_ID`, `WALMART_API_KEY`, `WALMART_PUBLISHER_ID`
 - **CORS:** `CORS_ORIGINS`
 
 ## Search behavior
 
 - **Literal queries** (`shower`, `soap`): keyword search + score threshold
 - **Meaning queries** (`discount`, `deal`): hybrid + semantic + vector
-- **Fallback**: retries with hybrid if keyword returns nothing
-- **Catalog chat**: LLM plans terms → multi-query retrieve → LLM pick → LLM reply (not raw first-hit ranking)
+- **Grocery ladder:** Azure Search → merchant API (if configured) → web search
+- **Electronics chat:** LLM plans terms → multi-query retrieve → LLM pick → LLM reply
 
 Tune via `MIN_RERANKER_SCORE` and `MIN_SEARCH_SCORE`.
 
@@ -161,11 +153,12 @@ Tune via `MIN_RERANKER_SCORE` and `MIN_SEARCH_SCORE`.
 
 | Module | Responsibility |
 |---|---|
-| `app/main.py` | FastAPI routes and chat orchestration |
-| `app/routing.py` | Grocery compare vs product search vs advisory |
-| `app/party_planner/` | LangGraph decompose → price → compare |
-| `app/catalog_pick.py` | Affiliate/product LLM plan, pick, and reply |
+| `app/main.py` | FastAPI routes |
+| `app/orchestrator/` | LangGraph split → Send agents → merge |
+| `app/party_planner/` | Grocery fetch/compare subgraph helpers |
+| `app/catalog_pick.py` | Electronics LLM plan/pick/reply |
+| `app/merchants/` | Optional Kroger/Walmart API clients |
 | `app/search.py` | Azure AI Search client |
 | `app/llm_client.py` | Shared Azure OpenAI / Ollama completions |
-| `app/replies.py` | LLM reply helper (template only as last resort) |
+| `app/routing.py` | Heuristic helpers (fallback split / legacy hints) |
 | `app/advisory.py` | Out-of-catalog shopping lists |

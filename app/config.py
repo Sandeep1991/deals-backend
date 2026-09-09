@@ -53,6 +53,14 @@ class Settings(BaseSettings):
         "https://thetinkerer.xyz,https://www.thetinkerer.xyz"
     )
 
+    # Optional merchant product APIs (grocery price ladder step 2)
+    kroger_client_id: str = ""
+    kroger_client_secret: str = ""
+    kroger_location_id: str = ""
+    walmart_api_key: str = ""
+    walmart_publisher_id: str = ""
+    walmart_api_base: str = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search"
+
 
 @lru_cache
 def get_settings() -> Settings:

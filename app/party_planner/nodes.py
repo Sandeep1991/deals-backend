@@ -4,6 +4,7 @@ import re
 
 from app.advisory import format_missing_catalog_items
 from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_configured, resolve_decompose_provider
+from app.merchants import client_for_merchant
 from app.models import Ad
 from app.party_planner.decompose import DECOMPOSE_SYSTEM, heuristic_decompose
 from app.party_planner.quantities import normalize_plan_quantities, packages_for_ad
@@ -126,6 +127,7 @@ async def _quote_item(
     ad: Ad | None = None
     source = "search"
 
+    # 1) Azure AI Search
     for term in item.search_terms or [item.name]:
         results = search_service.search(
             term,
@@ -141,6 +143,20 @@ async def _quote_item(
         if ad:
             break
 
+    # 2) Official merchant API (no-op when unconfigured)
+    if not ad:
+        client = client_for_merchant(merchant)
+        if client and client.is_configured():
+            term = (item.search_terms[0] if item.search_terms else item.name)
+            try:
+                api_ad = await client.search_product(term)
+            except Exception:
+                api_ad = None
+            if api_ad:
+                ad = api_ad
+                source = "api"
+
+    # 3) Web search fallback
     if not ad:
         ad = await search_merchant_product(merchant, item.search_terms[0] if item.search_terms else item.name)
         source = "web"
@@ -303,7 +319,7 @@ def _format_reply(comparison: StoreComparison) -> str:
         for quote in basket.quotes:
             price = quote.ad.price
             total = f" → ${quote.line_total:.2f}" if quote.line_total is not None else ""
-            source = " (web)" if quote.source == "web" else ""
+            source = f" ({quote.source})" if quote.source in {"web", "api"} else ""
             lines.append(f"- {quote.item_name}: [{quote.ad.title}]({quote.ad.url}) — {price}{total}{source}")
         if basket.subtotal is not None:
             if basket.subtotal_is_partial:
@@ -330,7 +346,7 @@ def _format_reply(comparison: StoreComparison) -> str:
         q.item_name
         for b in comparison.merchants
         for q in b.quotes
-        if q.source == "search" and q.line_total is not None
+        if q.source in {"search", "api"} and q.line_total is not None
     }
     for item in plan.required_items:
         if item.name not in priced_names:
