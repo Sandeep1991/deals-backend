@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     kroger_client_id: str = ""
     kroger_client_secret: str = ""
     kroger_location_id: str = ""
+    kroger_zip_code: str = ""
     walmart_api_key: str = ""
     walmart_publisher_id: str = ""
     walmart_api_base: str = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search"
