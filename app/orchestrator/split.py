@@ -20,15 +20,18 @@ Return JSON only:
 
 Category guide:
 - grocery: food, drinks, household consumables, snacks, paper towels, trash bags
-- electronics: solar, power stations, chargers, batteries, Anker/Solix, gadgets
+- electronics: solar, power stations, chargers, batteries, Anker/Solix, gadgets, electronic devices
 - clothing: apparel, shoes, jackets
 - stationery: notebooks, pencils, school/office supplies
-- other: anything else
+- other: anything else (tents, sleeping bags, specialty gear we cannot price at grocery)
 
 Rules:
 - quantity = packages/units to buy, NOT guest count.
-- For night RV/camping power → electronics (power station + panel), not grocery.
-- For camping food/snacks → grocery.
+- Emit CONCRETE products, never category blobs like "Snacks", "Food", "Essentials", or "Electronics".
+- For night RV/camping power / lots of devices → electronics (portable power station + panel if useful).
+- For camping/weekend/family trips → also emit several grocery consumables:
+  bottled water, trail mix or snacks, trash bags, paper towels (and sunscreen/bug spray if relevant).
+  Do NOT put tents/sleeping bags under grocery.
 - Mixed queries must emit items in multiple categories.
 - search_terms: 1-3 short supermarket/catalog phrases.
 - Never invent brands unless the user named them."""
@@ -65,7 +68,23 @@ def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
                 )
             )
 
-    if any(t in q for t in ("snack", "trail mix", "food", "water", "grocery", "chai", "latte", "taco", "party")):
+    grocery_tokens = (
+        "snack",
+        "trail mix",
+        "food",
+        "water",
+        "grocery",
+        "chai",
+        "latte",
+        "taco",
+        "party",
+        "camp",
+        "camping",
+        "weekend",
+        "family",
+        "pack",
+    )
+    if any(t in q for t in grocery_tokens):
         if "trail mix" in q or "snack" in q:
             items.append(
                 CompositeItem(name="trail mix", search_terms=["trail mix", "snacks"], category="grocery")
@@ -74,6 +93,16 @@ def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
             items.append(
                 CompositeItem(name="bottled water", search_terms=["bottled water"], category="grocery")
             )
+        # Camping/weekend packing → seed a real grocery list (agent may expand further)
+        if any(t in q for t in ("camp", "camping", "weekend trip", "pack essentials", "family")):
+            for name, terms in (
+                ("bottled water", ["bottled water", "water bottles"]),
+                ("trail mix", ["trail mix", "snacks"]),
+                ("trash bags", ["trash bags"]),
+                ("paper towels", ["paper towels"]),
+            ):
+                if not any(i.name == name and i.category == "grocery" for i in items):
+                    items.append(CompositeItem(name=name, search_terms=terms, category="grocery"))
         if should_compare(query, "auto") and not any(i.category == "grocery" for i in items):
             # Fall back to treating the whole query as grocery planning
             items.append(

@@ -8,8 +8,10 @@ from app.orchestrator.state import CategoryResult, OrchestratorState
 MERGE_SYSTEM = """You are DealFinder. Merge category agent results into one helpful reply.
 Write 3-6 sentences (or short markdown sections) that answer the user's request.
 Use ONLY the provided category results — do not invent products, prices, or URLs.
-Do not paste tracking URLs (cards carry links).
-If grocery comparison exists, briefly mention which store is cheaper when clear.
+When a product is listed with a markdown link, keep that exact [title](url) in your reply
+so the shopper can open the deal. Do not invent or rewrite URLs.
+If grocery comparison exists, briefly mention which store is cheaper when clear and name
+2-4 of the priced grocery items (not just "snacks").
 If electronics and grocery both appear, cover both needs.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""
 
@@ -55,6 +57,28 @@ def _pick_mode(results: list[CategoryResult]) -> str:
     return "mixed" if len(cats) > 1 else "search"
 
 
+def _ad_line(ad: Ad) -> str:
+    label = f"[{ad.title}]({ad.url})" if ad.url else ad.title
+    merchant = f" ({ad.merchant})" if ad.merchant else ""
+    return f"- {label} — {ad.price}{merchant}"
+
+
+def _ensure_product_links(reply: str, ads: list[Ad]) -> str:
+    """If the merge model named a product but dropped its URL, weave trusted links back in."""
+    text = (reply or "").strip()
+    if not text or not ads:
+        return text
+    for ad in ads:
+        if not ad.url or not ad.title:
+            continue
+        linked = f"[{ad.title}]({ad.url})"
+        if linked in text:
+            continue
+        if ad.title in text:
+            text = text.replace(ad.title, linked, 1)
+    return text
+
+
 def _template_merge(query: str, summary: str, results: list[CategoryResult]) -> str:
     parts: list[str] = []
     if summary:
@@ -68,8 +92,9 @@ def _template_merge(query: str, summary: str, results: list[CategoryResult]) -> 
             continue
         if result.ads:
             top = result.ads[0]
+            linked = f"[{top.title}]({top.url})" if top.url else top.title
             parts.append(
-                f"For {result.category}, start with {top.title} at {top.price}."
+                f"For {result.category}, start with {linked} at {top.price}."
             )
         elif result.notes:
             parts.append(" ".join(result.notes))
@@ -92,9 +117,10 @@ async def merge_results_node(state: OrchestratorState) -> dict:
         if result.reply_fragment:
             context_lines.append(result.reply_fragment)
         if result.comparison and result.comparison.reply:
-            context_lines.append(result.comparison.reply[:1200])
+            # Keep shopping-list + linked products for the merge model
+            context_lines.append(result.comparison.reply[:2400])
         for ad in result.ads[:5]:
-            context_lines.append(f"- {ad.title} — {ad.price} ({ad.merchant})")
+            context_lines.append(_ad_line(ad))
         for note in result.notes:
             context_lines.append(f"- note: {note}")
         context_lines.append("")
@@ -105,8 +131,8 @@ async def merge_results_node(state: OrchestratorState) -> dict:
             reply = await complete_text(
                 MERGE_SYSTEM,
                 "\n".join(context_lines) + "\nWrite the merged reply now.",
-                max_tokens=500,
-                temperature=0.55,
+                max_tokens=650,
+                temperature=0.45,
             )
         except (LLMNotConfiguredError, Exception):
             reply = ""
@@ -116,6 +142,8 @@ async def merge_results_node(state: OrchestratorState) -> dict:
     # Prefer grocery compare reply body when mode is pure compare and merge was thin
     if mode == "compare" and comparison and comparison.reply and len(reply) < 80:
         reply = comparison.reply
+
+    reply = _ensure_product_links(reply, ads)
 
     out: dict = {
         "reply": reply,

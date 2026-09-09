@@ -31,7 +31,7 @@ PRODUCT_SEARCH_HINTS = re.compile(
     r"solar|charger|power\s*station|anker|solix|portable\s+power|"
     r"generator|battery\s+bank|inverter|power\s*bank|"
     r"rv\b|camper\b|van\s*life|"
-    r"electronics|laptop|headphones|earbuds|smartwatch|"
+    r"electronics?|electronic\s+devices?|laptop|headphones|earbuds|smartwatch|"
     r"rakuten|affiliate"
     r")\b",
     re.IGNORECASE,

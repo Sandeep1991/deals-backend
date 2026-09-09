@@ -99,8 +99,14 @@ def heuristic_decompose(query: str) -> ShoppingPlan:
         )
 
     if any(token in q for token in ("camp", "camping", "campsite", "pack essentials", "weekend trip")):
-        # Don't treat solar/RV gear queries as grocery packing lists.
-        if not any(t in q for t in ("solar", "anker", "solix", "power station", "generator", "rv", "battery")):
+        # Grocery packing consumables. Specialty gear / pure solar queries are handled
+        # by product search; still seed staples when the ask is a trip packing list.
+        product_only = any(
+            t in q for t in ("solar", "anker", "solix", "power station", "generator")
+        ) and not any(
+            t in q for t in ("camp", "camping", "weekend", "family", "pack", "snack", "food", "water")
+        )
+        if not product_only:
             required.extend(
                 [
                     ShoppingItem(name="bottled water", search_terms=["bottled water", "water bottles"]),
