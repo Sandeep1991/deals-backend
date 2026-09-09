@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+from app.compare import to_compare_response
+from app.llm_client import LLMNotConfiguredError, complete_text, is_decompose_configured
+from app.models import Ad
+from app.orchestrator.state import CategoryResult, OrchestratorState
+
+MERGE_SYSTEM = """You are DealFinder. Merge category agent results into one helpful reply.
+Write 3-6 sentences (or short markdown sections) that answer the user's request.
+Use ONLY the provided category results — do not invent products, prices, or URLs.
+Do not paste tracking URLs (cards carry links).
+If grocery comparison exists, briefly mention which store is cheaper when clear.
+If electronics and grocery both appear, cover both needs.
+Avoid canned phrases like "I found N deals" or "click any deal card"."""
+
+
+def _flatten_ads(results: list[CategoryResult]) -> list[Ad]:
+    seen: set[str] = set()
+    ads: list[Ad] = []
+    for result in results:
+        for ad in result.ads:
+            if ad.id in seen:
+                continue
+            seen.add(ad.id)
+            ads.append(ad)
+        if result.comparison:
+            for basket in result.comparison.merchants:
+                for quote in basket.quotes:
+                    if quote.ad.id in seen:
+                        continue
+                    seen.add(quote.ad.id)
+                    ads.append(quote.ad)
+    return ads
+
+
+def _pick_mode(results: list[CategoryResult]) -> str:
+    cats = {r.category for r in results if r.items or r.ads or r.comparison or r.notes}
+    has_grocery_compare = any(r.category == "grocery" and r.comparison for r in results)
+    has_electronics = any(r.category == "electronics" and r.ads for r in results)
+    has_searchish = any(r.category in {"electronics", "clothing"} and r.ads for r in results)
+    has_advisory = any(r.category in {"stationery", "other", "clothing"} and not r.ads for r in results)
+
+    if has_grocery_compare and has_searchish:
+        return "mixed"
+    if has_grocery_compare and len(cats) == 1:
+        return "compare"
+    if has_searchish and not has_grocery_compare:
+        return "search"
+    if has_advisory and not has_grocery_compare and not has_searchish:
+        return "advisory"
+    if has_grocery_compare:
+        return "compare"
+    if has_electronics:
+        return "search"
+    return "mixed" if len(cats) > 1 else "search"
+
+
+def _template_merge(query: str, summary: str, results: list[CategoryResult]) -> str:
+    parts: list[str] = []
+    if summary:
+        parts.append(f"**{summary}**")
+    for result in results:
+        if result.reply_fragment:
+            parts.append(result.reply_fragment)
+            continue
+        if result.comparison and result.comparison.reply:
+            parts.append(result.comparison.reply)
+            continue
+        if result.ads:
+            top = result.ads[0]
+            parts.append(
+                f"For {result.category}, start with {top.title} at {top.price}."
+            )
+        elif result.notes:
+            parts.append(" ".join(result.notes))
+    return "\n\n".join(p for p in parts if p) or f'I could not build a full answer for "{query}".'
+
+
+async def merge_results_node(state: OrchestratorState) -> dict:
+    query = state["query"]
+    summary = state.get("event_summary") or query
+    results = list(state.get("category_results") or [])
+    ads = _flatten_ads(results)
+    mode = _pick_mode(results)
+
+    grocery = next((r for r in results if r.category == "grocery" and r.comparison), None)
+    comparison = grocery.comparison if grocery else None
+
+    context_lines: list[str] = [f"User request: {query}", f"Summary: {summary}", ""]
+    for result in results:
+        context_lines.append(f"## {result.category}")
+        if result.reply_fragment:
+            context_lines.append(result.reply_fragment)
+        if result.comparison and result.comparison.reply:
+            context_lines.append(result.comparison.reply[:1200])
+        for ad in result.ads[:5]:
+            context_lines.append(f"- {ad.title} — {ad.price} ({ad.merchant})")
+        for note in result.notes:
+            context_lines.append(f"- note: {note}")
+        context_lines.append("")
+
+    reply = ""
+    if is_decompose_configured():
+        try:
+            reply = await complete_text(
+                MERGE_SYSTEM,
+                "\n".join(context_lines) + "\nWrite the merged reply now.",
+                max_tokens=500,
+                temperature=0.55,
+            )
+        except (LLMNotConfiguredError, Exception):
+            reply = ""
+    if not reply:
+        reply = _template_merge(query, summary, results)
+
+    # Prefer grocery compare reply body when mode is pure compare and merge was thin
+    if mode == "compare" and comparison and comparison.reply and len(reply) < 80:
+        reply = comparison.reply
+
+    out: dict = {
+        "reply": reply,
+        "ads": ads,
+        "mode": mode,
+        "comparison": comparison,
+    }
+    return out
+
+
+def to_chat_payload(state: OrchestratorState) -> dict:
+    """Map orchestrator state into ChatResponse fields."""
+    comparison = state.get("comparison")
+    compare_out = to_compare_response(comparison) if comparison else None
+    return {
+        "query": state["query"],
+        "reply": state.get("reply") or "",
+        "ads": state.get("ads") or [],
+        "mode": state.get("mode") or "search",
+        "comparison": compare_out,
+    }

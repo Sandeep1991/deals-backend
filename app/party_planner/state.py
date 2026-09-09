@@ -31,7 +31,7 @@ class ProductQuote(BaseModel):
     ad: Ad
     unit_price: Optional[float] = None
     line_total: Optional[float] = None
-    source: str = "search"  # search | web
+    source: str = "search"  # search | api | web
 
 
 class MerchantBasket(BaseModel):

@@ -18,10 +18,10 @@ from app.models import (
 )
 from app.advisory import build_advisory_reply
 from app.catalog_pick import llm_catalog_search
-from app.intent import is_non_grocery_query, out_of_scope_reply
+from app.intent import out_of_scope_reply
 from app.llm_client import LLMNotConfiguredError, resolve_decompose_provider
+from app.orchestrator import run_orchestrator, to_chat_payload
 from app.party_planner.graph import run_store_comparison
-from app.routing import should_compare
 from app.search import SearchService, SearchNotConfiguredError
 
 settings = get_settings()
@@ -69,17 +69,7 @@ def health() -> HealthResponse:
     )
 
 
-def _compare_has_catalog_prices(compare_response: CompareResponse) -> bool:
-    """True when at least one quote came from AI Search (not web-only 'See site')."""
-    for basket in compare_response.merchants:
-        for quote in basket.quotes:
-            if quote.source == "search" and quote.unit_price is not None:
-                return True
-    return False
-
-
 async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
-    # LLM plans search terms → AI Search → LLM picks relevant ads (not first-hit ranking).
     results, reply = await llm_catalog_search(query, search_service, limit=limit)
     if not results:
         if not reply:
@@ -101,24 +91,21 @@ async def _catalog_search_response(query: str, limit: int) -> ChatResponse:
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     require_search()
+    mode = (request.mode or "auto").lower().strip()
 
-    # Grocery/planning → LLM decompose + Kroger/Walmart compare.
-    # Product/affiliate queries → open AI Search (Anker Solix, etc.).
-    if should_compare(request.query, request.mode):
+    # Explicit overrides keep legacy single-path behavior.
+    if mode == "compare":
         try:
             comparison = await run_store_comparison(request.query, search_service)
             compare_response = to_compare_response(comparison)
-            if _compare_has_catalog_prices(compare_response):
-                return ChatResponse(
-                    query=request.query,
-                    reply=compare_response.reply,
-                    ads=compare_response.ads,
-                    results=[],
-                    mode="compare",
-                    comparison=compare_response,
-                )
-            # No grocery catalog hits — fall back so Rakuten/other merchants can surface.
-            return await _catalog_search_response(request.query, request.limit)
+            return ChatResponse(
+                query=request.query,
+                reply=compare_response.reply,
+                ads=compare_response.ads,
+                results=[],
+                mode="compare",
+                comparison=compare_response,
+            )
         except SearchNotConfiguredError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except LLMNotConfiguredError as exc:
@@ -126,16 +113,32 @@ async def chat(request: ChatRequest) -> ChatResponse:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Compare failed: {exc}") from exc
 
-    if is_non_grocery_query(request.query):
-        reply = await build_advisory_reply(request.query)
-        return ChatResponse(query=request.query, reply=reply, ads=[], results=[], mode="advisory")
+    if mode == "search":
+        try:
+            return await _catalog_search_response(request.query, request.limit)
+        except SearchNotConfiguredError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Search failed: {exc}") from exc
 
+    # Default auto: LangGraph orchestrator (LLM split → category agents → merge).
     try:
-        return await _catalog_search_response(request.query, request.limit)
+        state = await run_orchestrator(request.query, search_service, limit=request.limit)
+        payload = to_chat_payload(state)
+        return ChatResponse(
+            query=payload["query"],
+            reply=payload["reply"],
+            ads=payload["ads"],
+            results=[],
+            mode=payload["mode"],
+            comparison=payload["comparison"],
+        )
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LLMNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Search failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Orchestrator failed: {exc}") from exc
 
 
 @app.post("/api/compare", response_model=CompareResponse)
