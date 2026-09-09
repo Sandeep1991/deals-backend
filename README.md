@@ -137,7 +137,8 @@ See `.env.example`. Important:
 
 - **Search:** `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_INDEX`, `AZURE_SEARCH_SEMANTIC_CONFIG`
 - **LLM:** `DECOMPOSE_PROVIDER=auto`, `REPLY_PROVIDER=auto`, plus `AZURE_OPENAI_*` (or Ollama)
-- **Optional grocery APIs:** `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`, `KROGER_LOCATION_ID`, `WALMART_API_KEY`, `WALMART_PUBLISHER_ID`
+- **Optional grocery APIs:** `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`, `KROGER_LOCATION_ID` (or `KROGER_ZIP_CODE`), `WALMART_API_KEY`, `WALMART_PUBLISHER_ID`
+- Grocery compare only keeps a Search/API/web hit when `parse_price` succeeds; unpriced hits fall through the ladder
 - **CORS:** `CORS_ORIGINS`
 
 ## Search behavior

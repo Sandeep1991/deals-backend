@@ -11,8 +11,8 @@ _PRICE_RE = re.compile(
 
 def parse_price(price: str) -> float | None:
     """Parse ad price strings into a numeric dollar amount when possible."""
-    text = price.strip().lower()
-    if not text:
+    text = (price or "").strip().lower()
+    if not text or text in {"see site", "n/a", "na", "unavailable", "tbd"}:
         return None
     if any(token in text for token in ("buy", "free", "rollback", "from")):
         # Still try numeric extraction for strings like "From $3.98"
@@ -29,8 +29,13 @@ def parse_price(price: str) -> float | None:
     if cents:
         return round(float(cents.group("cents")) / 100, 2)
 
-    dollars = re.search(r"\$?(?P<amount>\d+(?:\.\d{2})?)", text)
+    dollars = re.search(r"\$\s?(?P<amount>\d+(?:,\d{3})*(?:\.\d{2})?)", text)
     if dollars:
-        return round(float(dollars.group("amount")), 2)
+        return round(float(dollars.group("amount").replace(",", "")), 2)
+
+    # Bare number only when clearly a price-like token (has decimal)
+    bare = re.search(r"(?<![a-z])(?P<amount>\d+\.\d{2})(?![a-z])", text)
+    if bare:
+        return round(float(bare.group("amount")), 2)
 
     return None

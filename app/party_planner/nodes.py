@@ -118,6 +118,13 @@ async def fetch_prices_node(state: PlannerState, search_service: SearchService) 
     return {"quotes": quotes}
 
 
+def _has_usable_price(ad: Ad | None) -> bool:
+    """True when the ad has a parseable dollar amount (not blank / 'See site')."""
+    if not ad:
+        return False
+    return parse_price(ad.price) is not None
+
+
 async def _quote_item(
     search_service: SearchService,
     merchant: str,
@@ -126,9 +133,11 @@ async def _quote_item(
 ) -> ProductQuote | None:
     ad: Ad | None = None
     source = "search"
+    terms = item.search_terms or [item.name]
+    primary_term = terms[0] if terms else item.name
 
-    # 1) Azure AI Search
-    for term in item.search_terms or [item.name]:
+    # 1) Azure AI Search — keep only if we can price it; otherwise keep falling through.
+    for term in terms:
         results = search_service.search(
             term,
             limit=5,
@@ -136,30 +145,42 @@ async def _quote_item(
             min_score=MIN_INGREDIENT_SCORE,
         )
         for result in results:
-            if _is_relevant_match(term, item.name, result.ad):
+            if not _is_relevant_match(term, item.name, result.ad):
+                continue
+            if not ad:
+                ad = result.ad
+                source = "search"
+            if _has_usable_price(result.ad):
                 ad = result.ad
                 source = "search"
                 break
-        if ad:
+        if _has_usable_price(ad):
             break
 
     # 2) Official merchant API (no-op when unconfigured)
-    if not ad:
+    if not _has_usable_price(ad):
         client = client_for_merchant(merchant)
         if client and client.is_configured():
-            term = (item.search_terms[0] if item.search_terms else item.name)
             try:
-                api_ad = await client.search_product(term)
+                api_ad = await client.search_product(primary_term)
             except Exception:
                 api_ad = None
-            if api_ad:
+            if _has_usable_price(api_ad):
+                ad = api_ad
+                source = "api"
+            elif api_ad and not ad:
                 ad = api_ad
                 source = "api"
 
-    # 3) Web search fallback
-    if not ad:
-        ad = await search_merchant_product(merchant, item.search_terms[0] if item.search_terms else item.name)
-        source = "web"
+    # 3) Web search fallback — prefer a parseable $ amount over "See site"
+    if not _has_usable_price(ad):
+        web_ad = await search_merchant_product(merchant, primary_term)
+        if _has_usable_price(web_ad):
+            ad = web_ad
+            source = "web"
+        elif web_ad and not ad:
+            ad = web_ad
+            source = "web"
 
     if not ad:
         return None
