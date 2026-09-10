@@ -218,19 +218,37 @@ def seed_items_for_choice(choice: str, original_ask: str) -> list[CompositeItem]
     if "cup cake" in ask.replace("-", " "):
         product = "cupcakes"
 
-    if _is_ready_made_choice(choice):
+    diet_prefix = ""
+    for diet in ("vegan", "organic", "gluten-free", "gluten free", "dairy-free", "dairy free"):
+        if diet in ask:
+            diet_prefix = "vegan" if diet.startswith("vegan") else diet
+            break
+
+    label = f"{diet_prefix} {product}".strip() if diet_prefix else product
+
+    if _is_ready_made_choice(choice) or any(
+        w in ask for w in ("store bought", "store-bought", "ready made", "ready-made", "premade", "pre-made")
+    ):
+        terms = [
+            f"{label}",
+            f"bakery {label}",
+            f"ready made {label}",
+        ]
+        if diet_prefix:
+            terms.append(f"{diet_prefix} bakery {product}")
         return [
             CompositeItem(
-                name=f"ready-made {product}",
-                search_terms=[f"ready made {product}", f"bakery {product}", product],
+                name=f"ready-made {label}",
+                search_terms=terms,
                 category="grocery",
                 quantity=1.0,
             )
         ]
+    mix_name = f"{label} mix" if diet_prefix else f"{product} mix"
     return [
         CompositeItem(
-            name=f"{product} mix",
-            search_terms=[f"{product} mix", f"{product} baking mix"],
+            name=mix_name,
+            search_terms=[mix_name, f"{product} baking mix"],
             category="grocery",
             quantity=1.0,
         ),
@@ -241,8 +259,10 @@ def seed_items_for_choice(choice: str, original_ask: str) -> list[CompositeItem]
             quantity=1.0,
         ),
         CompositeItem(
-            name="frosting",
-            search_terms=["frosting", "icing"],
+            name=f"{diet_prefix} frosting".strip() if diet_prefix else "frosting",
+            search_terms=[f"{diet_prefix} frosting".strip(), "frosting", "icing"]
+            if diet_prefix
+            else ["frosting", "icing"],
             category="grocery",
             quantity=1.0,
         ),

@@ -22,6 +22,56 @@ from app.web_search import search_merchant_product
 MERCHANTS = ["Kroger", "Walmart"]
 MIN_INGREDIENT_SCORE = 0.5
 
+# "Vanilla Cupcake Flavor Energy Bar" must not match a request for cupcakes.
+_FLAVOR_ONLY_RE = re.compile(
+    r"\b(cupcake|cookie|brownie|muffin|cake)s?\s+flavou?rs?\b",
+    re.I,
+)
+_SNACK_BAR_RE = re.compile(
+    r"\b("
+    r"energy\s+bars?|protein\s+bars?|granola\s+bars?|meal\s+bars?|cereal\s+bars?|"
+    r"zbars?|clif\s+bars?|rxbars?|kind\s+bars?|larabars?"
+    r")\b",
+    re.I,
+)
+_DIY_BAKERY_NAME_RE = re.compile(
+    r"\b("
+    r"liners?|baking\s+cups?|frosting|icing|sprinkles|food\s+coloring|"
+    r"cake\s+mix|cupcake\s+mix|baking\s+mix"
+    r")\b",
+    re.I,
+)
+
+
+def _wants_bakery_dessert(item_name: str) -> bool:
+    n = (item_name or "").lower()
+    if _DIY_BAKERY_NAME_RE.search(n):
+        return False
+    return any(w in n for w in ("cupcake", "muffin", "brownie")) or bool(
+        re.search(r"\b(cookies?|cakes?)\b", n)
+    )
+
+
+def _is_flavor_hijack_or_wrong_form(item_name: str, ad: Ad) -> bool:
+    """True when the ad only uses the dessert word as a flavor / is a snack bar."""
+    if not _wants_bakery_dessert(item_name):
+        return False
+    haystack = f"{ad.title} {ad.keywords} {ad.description}".lower()
+    if _SNACK_BAR_RE.search(haystack):
+        return True
+    # Strip "cupcake flavor" style phrases; require a real dessert product token left.
+    cleaned = _FLAVOR_ONLY_RE.sub(" ", haystack)
+    name = item_name.lower()
+    if "cupcake" in name and not re.search(r"\bcupcakes?\b", cleaned):
+        return True
+    if "muffin" in name and not re.search(r"\bmuffins?\b", cleaned):
+        return True
+    if "brownie" in name and not re.search(r"\bbrownies?\b", cleaned):
+        return True
+    if re.search(r"\bcookies?\b", name) and not re.search(r"\bcookies?\b", cleaned):
+        return True
+    return False
+
 
 def _is_relevant_match(
     term: str,
@@ -32,6 +82,9 @@ def _is_relevant_match(
 ) -> bool:
     haystack = f"{ad.title} {ad.keywords} {ad.description}".lower()
     name = item_name.lower().strip()
+
+    if _is_flavor_hijack_or_wrong_form(item_name, ad):
+        return False
 
     # Preference-constrained items (organic/vegan/…) must appear on the ad
     for token in required_tokens or []:
@@ -52,11 +105,21 @@ def _is_relevant_match(
         skip.add(tl)
         skip.add(tl.replace("-", " "))
         skip.add(tl.replace(" ", "-"))
-    product_words = [w for w in name_words if w not in skip]
+    # Drop path adjectives so "ready-made cupcakes" still matches bakery cupcakes
+    skip.update({"ready", "made", "store", "bought", "bakery", "homemade", "pre"})
+    product_words = [w for w in name_words if w not in skip and w not in {"ready-made", "store-bought"}]
     check_words = product_words if product_words else name_words
     if len(check_words) >= 2 and all(w in haystack for w in check_words):
         return True
     if len(check_words) == 1 and check_words[0] in haystack:
+        # Single token like "cupcakes" — require word boundary, not "cupcake" inside a flavor phrase only
+        token = check_words[0]
+        if not re.search(rf"\b{re.escape(token.rstrip('s'))}s?\b", haystack):
+            return False
+        if _FLAVOR_ONLY_RE.search(haystack) and _wants_bakery_dessert(item_name):
+            cleaned = _FLAVOR_ONLY_RE.sub(" ", haystack)
+            if not re.search(rf"\b{re.escape(token.rstrip('s'))}s?\b", cleaned):
+                return False
         return True
 
     term_l = term.lower().strip()
@@ -67,6 +130,33 @@ def _is_relevant_match(
         return term_l in haystack
 
     return re.search(rf"\b{re.escape(term_l)}\b", haystack) is not None
+
+
+def _looks_ready_made_request(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        w in t
+        for w in (
+            "ready-made",
+            "ready made",
+            "store-bought",
+            "store bought",
+            "pre-made",
+            "premade",
+            "buy pre-made",
+            "bakery",
+        )
+    ) and not any(w in t for w in ("ingredient", "bake at home", "homemade", "from scratch"))
+
+
+def _strip_diy_bakery_items(plan: ShoppingPlan, *, query: str, guidance: str = "") -> ShoppingPlan:
+    """Store-bought bakery asks should not keep liners/frosting/mix lines."""
+    if not plan or not _looks_ready_made_request(f"{query} {guidance}"):
+        return plan
+    kept = [item for item in plan.required_items if not _DIY_BAKERY_NAME_RE.search(item.name or "")]
+    if kept:
+        plan.required_items = kept
+    return plan
 
 
 async def decompose_node(state: PlannerState) -> dict:
@@ -108,6 +198,7 @@ async def decompose_node(state: PlannerState) -> dict:
         plan.event_summary = f"{plan.event_summary} (fallback planner — configure LLM for better results)"
 
     plan = normalize_plan_quantities(plan, query)
+    plan = _strip_diy_bakery_items(plan, query=query, guidance=query)
 
     return {"plan": plan}
 
@@ -225,10 +316,10 @@ async def _quote_item(
             web_ad
             and _has_usable_price(web_ad)
             and _is_plausible_grocery_price(web_ad, source="web")
+            and _is_relevant_match(primary_term, item.name, web_ad, required_tokens=required)
         ):
-            if _is_relevant_match(primary_term, item.name, web_ad, required_tokens=required) or not required:
-                ad = web_ad
-                source = "web"
+            ad = web_ad
+            source = "web"
 
     if not ad:
         return None

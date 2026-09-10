@@ -242,6 +242,29 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
     else:
         plan = _items_to_plan(query, summary, items)
 
+    from app.orchestrator.clarify import seed_items_for_choice
+    from app.party_planner.nodes import _strip_diy_bakery_items
+
+    ask_ctx = original_user_ask(history, fallback=query)
+    plan = _strip_diy_bakery_items(
+        plan,
+        query=f"{query} {ask_ctx}",
+        guidance=planning_guidance,
+    )
+    store_bought_follow_up = any(
+        w in query.lower()
+        for w in ("store bought", "store-bought", "ready-made", "ready made", "premade", "pre-made")
+    )
+    if not plan.required_items and (planning_guidance or store_bought_follow_up):
+        choice = (decision.resolved_choice if decision else "") or planning_guidance or query
+        items = seed_items_for_choice(choice, f"{ask_ctx} {query}")
+        plan = _items_to_plan(ask_ctx or query, summary, items)
+        plan = _strip_diy_bakery_items(
+            plan,
+            query=f"{query} {ask_ctx}",
+            guidance=planning_guidance or query,
+        )
+
     if not plan.required_items and not plan.alternative_options:
         return {
             "category_results": [
