@@ -188,19 +188,22 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
     decision = clarification_from_raw(state.get("clarification"))
     planning_guidance = (decision.planning_guidance if decision else "") or ""
 
+    from app.orchestrator.clarify import looks_like_option_answer, original_user_ask
+
+    # Never run preference-list rewrite on bare option answers like "2."
+    if rewrite and looks_like_option_answer(query):
+        rewrite = False
+
     if not items and rewrite:
         items = items_from_prior_list(pref.prior_grocery_items or extract_prior_grocery_names(history), pref.preferences)
 
     # Short clarification answers ("option 1") may not split into concrete SKUs.
-    if not items and planning_guidance:
-        items = [
-            CompositeItem(
-                name="event shopping list",
-                search_terms=["groceries"],
-                category="grocery",
-                quantity=1.0,
-            )
-        ]
+    if planning_guidance and (not items or looks_like_option_answer(query)):
+        from app.orchestrator.clarify import seed_items_for_choice
+
+        ask = original_user_ask(history, fallback=query)
+        choice = (decision.resolved_choice if decision else "") or planning_guidance
+        items = seed_items_for_choice(choice, ask)
 
     if not items:
         return {
@@ -209,13 +212,16 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
             ]
         }
 
+    # Decompose against the original event ask, not "2."
+    decompose_user_ask = original_user_ask(history, fallback=query) if planning_guidance else query
+
     if rewrite:
         plan, items = await _rewrite_for_preferences(query, state, items, summary, pref)
     elif _needs_decompose(query, items) or planning_guidance:
         decomposed = await decompose_node(
             {
                 "query": _grocery_decompose_query(
-                    query,
+                    decompose_user_ask,
                     items,
                     planning_guidance=planning_guidance,
                 ),

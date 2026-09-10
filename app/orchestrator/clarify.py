@@ -8,6 +8,7 @@ agents — no product-specific hardcoding.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,260 @@ from app.llm_client import LLMNotConfiguredError, complete_json, is_decompose_co
 from app.orchestrator.memory import format_history_block
 from app.orchestrator.preferences import preference_summary_from_raw
 from app.orchestrator.state import ChatTurn, CompositeItem, OrchestratorState
+
+_OPTION_LINE_RE = re.compile(
+    r"^\s*(?:[-*]|\d+[.)])\s+\*{0,2}(.+?)\*{0,2}\s*$",
+    re.M,
+)
+_BARE_OPTION_RE = re.compile(
+    r"^\s*(?:option\s*)?(\d+)\s*[.)]?\s*$",
+    re.I,
+)
+_OPTION_WITH_TEXT_RE = re.compile(
+    r"^\s*(?:option\s*)?(\d+)\s*[.):]?\s+(.+)$",
+    re.I,
+)
+
+
+def looks_like_option_answer(query: str) -> bool:
+    q = (query or "").strip()
+    if not q:
+        return False
+    if _BARE_OPTION_RE.match(q):
+        return True
+    if len(q) <= 48 and _OPTION_WITH_TEXT_RE.match(q):
+        return True
+    ql = q.lower()
+    return any(
+        w in ql
+        for w in (
+            "ready-made",
+            "ready made",
+            "pre-made",
+            "premade",
+            "store-bought",
+            "homemade",
+            "home made",
+            "bake at home",
+            "make at home",
+            "ingredients",
+            "buy pre",
+            "buy ready",
+        )
+    )
+
+
+def extract_options_from_assistant(content: str) -> list[str]:
+    """Pull numbered/bulleted choices from a clarification reply."""
+    text = content or ""
+    opts: list[str] = []
+    for match in _OPTION_LINE_RE.finditer(text):
+        label = re.sub(r"\*\*", "", match.group(1)).strip(" -–—:")
+        if not label or len(label) > 120:
+            continue
+        low = label.lower()
+        if low.startswith("reply with"):
+            continue
+        if "option number" in low:
+            continue
+        opts.append(label)
+    # Dedupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for opt in opts:
+        key = opt.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(opt)
+    return out[:4]
+
+
+def last_clarification_options(history: list[ChatTurn] | None) -> tuple[list[str], str]:
+    """Return (options, assistant_question_text) from the latest clarification ask."""
+    for turn in reversed(history or []):
+        if turn.role != "assistant":
+            continue
+        content = turn.content or ""
+        opts = extract_options_from_assistant(content)
+        if len(opts) >= 2:
+            return opts, content
+        break
+    return [], ""
+
+
+def original_user_ask(history: list[ChatTurn] | None, fallback: str = "") -> str:
+    """Most recent substantive user ask (skip bare option answers)."""
+    found = ""
+    for turn in history or []:
+        if turn.role != "user":
+            continue
+        content = (turn.content or "").strip()
+        if not content or looks_like_option_answer(content):
+            continue
+        found = content
+    return found or (fallback or "").strip()
+
+
+def resolve_option_choice(query: str, options: list[str]) -> str | None:
+    """Map '2' / '2.' / 'option 2' / text overlap to an option label."""
+    q = (query or "").strip()
+    if not q or not options:
+        return None
+
+    bare = _BARE_OPTION_RE.match(q)
+    if bare:
+        idx = int(bare.group(1)) - 1
+        if 0 <= idx < len(options):
+            return options[idx]
+
+    with_text = _OPTION_WITH_TEXT_RE.match(q)
+    if with_text:
+        idx = int(with_text.group(1)) - 1
+        if 0 <= idx < len(options):
+            return options[idx]
+
+    ql = q.lower()
+    # Exact / substring match against option labels
+    for opt in options:
+        ol = opt.lower()
+        if ql == ol or ql in ol or ol in ql:
+            return opt
+
+    # Soft keyword mapping
+    ready_hints = ("ready", "pre-made", "premade", "store", "bakery", "buy pre", "buy ready", "purchased")
+    home_hints = ("home", "bake", "ingredient", "scratch", "diy", "make")
+    if any(h in ql for h in ready_hints):
+        for opt in options:
+            ol = opt.lower()
+            if any(h in ol for h in ("ready", "pre-made", "premade", "store", "buy", "bakery")):
+                return opt
+    if any(h in ql for h in home_hints):
+        for opt in options:
+            ol = opt.lower()
+            if any(h in ol for h in ("home", "bake", "ingredient", "make", "scratch", "diy")):
+                return opt
+    return None
+
+
+def _is_ready_made_choice(choice: str) -> bool:
+    c = (choice or "").lower()
+    if any(w in c for w in ("ingredient", "scratch", "diy", "mix", "homemade", "home-made", "home made", "bake")):
+        # "Buy pre-made" should still win over homemade keywords if buy/ready present
+        if any(w in c for w in ("ready", "pre-made", "premade", "store-bought", "bakery")) and "ingredient" not in c:
+            return True
+        if any(w in c for w in ("make", "homemade", "home made", "bake", "ingredient")):
+            return False
+    return any(w in c for w in ("ready", "pre-made", "premade", "store", "bakery", "buy pre", "buy ready"))
+
+
+def planning_guidance_for_choice(choice: str, original_ask: str) -> str:
+    ask = original_ask.strip() or "the user's event request"
+    if _is_ready_made_choice(choice):
+        return (
+            f"User chose: {choice}. "
+            f"Original request: {ask}. "
+            "Plan READY-MADE / store-bought / bakery finished products only "
+            "(packs/dozen as needed for the guest count). "
+            "EXCLUDE baking mix, liners, frosting, sprinkles, flour, and other DIY ingredients "
+            "unless the user also asked for those."
+        )
+    return (
+        f"User chose: {choice}. "
+        f"Original request: {ask}. "
+        "Plan BAKE-AT-HOME ingredients only (mix or base ingredients, liners, frosting/icing, "
+        "sprinkles/decorations as relevant). "
+        "EXCLUDE ready-made bakery packs of the finished item."
+    )
+
+
+def seed_items_for_choice(choice: str, original_ask: str) -> list[CompositeItem]:
+    """Concrete grocery seeds so decompose does not fall back to word-salad."""
+    ask = (original_ask or "").lower()
+    # Generic finished-food token from the ask; fall back to "cupcakes" only if present
+    product = "party dessert"
+    for token in (
+        "cupcakes",
+        "cupcake",
+        "cookies",
+        "cookie",
+        "muffins",
+        "muffin",
+        "brownies",
+        "brownie",
+        "cake",
+        "donuts",
+        "donut",
+        "pizza",
+    ):
+        if token in ask or token.replace("cupcake", "cup cake") in ask.replace("-", " "):
+            product = "cupcakes" if token.startswith("cupcake") else (
+                "cookies" if token.startswith("cookie") else (
+                    "muffins" if token.startswith("muffin") else (
+                        "brownies" if token.startswith("brownie") else (
+                            "donuts" if token.startswith("donut") else token
+                        )
+                    )
+                )
+            )
+            break
+    # Normalize cup cakes
+    if "cup cake" in ask.replace("-", " "):
+        product = "cupcakes"
+
+    if _is_ready_made_choice(choice):
+        return [
+            CompositeItem(
+                name=f"ready-made {product}",
+                search_terms=[f"ready made {product}", f"bakery {product}", product],
+                category="grocery",
+                quantity=1.0,
+            )
+        ]
+    return [
+        CompositeItem(
+            name=f"{product} mix",
+            search_terms=[f"{product} mix", f"{product} baking mix"],
+            category="grocery",
+            quantity=1.0,
+        ),
+        CompositeItem(
+            name="cupcake liners" if product == "cupcakes" else "baking cups",
+            search_terms=["cupcake liners", "baking cups"] if product == "cupcakes" else ["baking cups"],
+            category="grocery",
+            quantity=1.0,
+        ),
+        CompositeItem(
+            name="frosting",
+            search_terms=["frosting", "icing"],
+            category="grocery",
+            quantity=1.0,
+        ),
+    ]
+
+
+def try_resolve_from_history(
+    query: str,
+    history: list[ChatTurn] | None,
+) -> ClarificationDecision | None:
+    """Deterministically resolve '2' / 'ready-made' against the prior clarification ask."""
+    if not looks_like_option_answer(query):
+        return None
+    options, _asst = last_clarification_options(history)
+    if len(options) < 2:
+        return None
+    choice = resolve_option_choice(query, options)
+    if not choice:
+        return None
+    ask = original_user_ask(history, fallback=query)
+    return ClarificationDecision(
+        needs_clarification=False,
+        question="",
+        options=options,
+        resolved_choice=choice,
+        planning_guidance=planning_guidance_for_choice(choice, ask),
+        reason="resolved option answer from prior clarification",
+    )
 
 CLARIFY_SYSTEM = """You are DealFinder's clarification gate (LangGraph node).
 Decide whether the shopper's request is clear enough to build a priced shopping list,
@@ -229,6 +484,10 @@ async def decide_clarification(
     prior_clarification: dict | None = None,
 ) -> ClarificationDecision:
     """LLM gate: ask options when ambiguous; resolve when user already chose."""
+    resolved = try_resolve_from_history(query, history)
+    if resolved:
+        return resolved
+
     if not is_decompose_configured():
         return ClarificationDecision(
             needs_clarification=False,
@@ -279,10 +538,24 @@ async def decide_clarification(
 
 async def clarify_intent_node(state: OrchestratorState) -> dict:
     """LangGraph node: pause for options or attach resolved planning guidance."""
+    query = state["query"]
+    history = list(state.get("history") or [])
     pref_raw = state.get("preference_summary")
     pref = preference_summary_from_raw(pref_raw if isinstance(pref_raw, dict) else None)
+
+    # Short answers like "2." must resolve against the prior ask — never treat as diet rewrite.
+    resolved = try_resolve_from_history(query, history)
+    if resolved:
+        ask = original_user_ask(history, fallback=query)
+        out: dict[str, Any] = {
+            "clarification": resolved.model_dump_state(),
+            "items": seed_items_for_choice(resolved.resolved_choice, ask),
+            "event_summary": resolved.resolved_choice or ask[:120] or "Shopping list",
+        }
+        return out
+
     # Dietary/list rewrites already have a clear cart to adjust — don't re-ask.
-    if pref and pref.is_list_rewrite:
+    if pref and pref.is_list_rewrite and not looks_like_option_answer(query):
         return {
             "clarification": ClarificationDecision(
                 needs_clarification=False,
@@ -292,8 +565,8 @@ async def clarify_intent_node(state: OrchestratorState) -> dict:
         }
 
     decision = await decide_clarification(
-        query=state["query"],
-        history=list(state.get("history") or []),
+        query=query,
+        history=history,
         items=list(state.get("items") or []),
         preference_summary=pref_raw if isinstance(pref_raw, dict) else None,
         prior_clarification=state.get("clarification")
@@ -301,7 +574,7 @@ async def clarify_intent_node(state: OrchestratorState) -> dict:
         else None,
     )
 
-    out: dict[str, Any] = {"clarification": decision.model_dump_state()}
+    out = {"clarification": decision.model_dump_state()}
 
     if decision.needs_clarification:
         from app.orchestrator.state import CategoryResult
@@ -313,19 +586,15 @@ async def clarify_intent_node(state: OrchestratorState) -> dict:
                 reply_fragment=decision.reply_markdown(),
             )
         ]
-        # Avoid fan-out pricing on ambiguous turns
         out["items"] = []
+    elif decision.resolved_choice and decision.planning_guidance:
+        ask = original_user_ask(history, fallback=query)
+        out["items"] = seed_items_for_choice(decision.resolved_choice, ask)
+        out["event_summary"] = decision.resolved_choice or ask[:120] or "Shopping list"
     elif decision.planning_guidance and not list(state.get("items") or []):
-        # User answered briefly ("option 2") — seed grocery so decompose can run.
-        out["items"] = [
-            CompositeItem(
-                name="event shopping list",
-                search_terms=["groceries"],
-                category="grocery",
-            )
-        ]
-        if not (state.get("event_summary") or "").strip():
-            out["event_summary"] = decision.resolved_choice or "Shopping list"
+        ask = original_user_ask(history, fallback=query)
+        out["items"] = seed_items_for_choice(decision.resolved_choice or decision.planning_guidance, ask)
+        out["event_summary"] = decision.resolved_choice or ask[:120] or "Shopping list"
     return out
 
 
