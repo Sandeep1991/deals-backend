@@ -31,27 +31,36 @@ Return JSON only:
   "reason": "short internal reason"
 }
 
+Priority order — ask the HIGHEST-impact ambiguity first:
+1. Fulfillment PATH that changes cart structure (most important):
+   ready-made / store-bought / bakery finished goods
+   vs make-at-home / DIY ingredients / from-scratch components.
+   Also: buy a finished kit vs assemble from parts; takeout-style vs cook-from-ingredients.
+2. Fundamentally different product families or meal approaches that yield different carts.
+3. Only then: count/size that materially changes packages — and ONLY if the path is already clear.
+
 When to set needs_clarification=true:
-- Multiple valid fulfillment paths would produce VERY DIFFERENT carts
-  (examples of patterns, not an exhaustive list: ready-made vs make-at-home;
-  rent/buy vs ingredients; one meal approach vs another; unclear size/count that
-  changes the cart; unclear which product family they want).
-- The latest user message is vague relative to prior context and you cannot
-  safely price without guessing.
+- The user message allows multiple of those high-impact paths and they have not chosen yet.
+- Judge primarily from the USER MESSAGE + history. Split items are ONLY hints and may be a
+  premature guess (e.g. mix/liners/frosting). Do NOT treat split DIY items as the user's choice.
+- If both "buy finished [food]" and "buy ingredients to make [food]" are plausible for an
+  event/school/party/kids bring-along request, you MUST clarify that path. Do not assume bake-at-home.
 
 When needs_clarification=false:
-- The request is specific enough, OR
-- Prior conversation already answered the ambiguity, OR
-- The latest user message is answering a prior clarification question.
+- The request (or prior answer) already picks the fulfillment path, OR
+- The latest user message answers a prior clarification, OR
+- One path is clearly stated (e.g. "cupcake mix", "ready-made cupcakes", "bakery cookies").
 
 If the user is answering a prior clarification:
 - needs_clarification=false
 - resolved_choice = their chosen option (short label)
 - planning_guidance = concrete instructions for the shopping planner
-  (what to include AND what to exclude)
+  (what to include AND what to exclude). Example: "READY-MADE only: bakery/store cupcake packs
+  for ~10 kids. Exclude mix, liners, frosting, sprinkles." or the DIY inverse.
 
 Rules:
-- options: 2-4 short, mutually exclusive choices. No prices.
+- options: 2-4 short, mutually exclusive choices. No prices. Prefer path choices over tiny
+  quantity variants ("exactly 10" vs "a few more") when a path ambiguity exists.
 - Do NOT invent brands.
 - Do NOT clarify routine preference tweaks that preference memory already handles
   (organic/vegan follow-ups) unless the cart structure itself is still ambiguous.
@@ -106,6 +115,111 @@ def _items_blurb(items: list[CompositeItem]) -> str:
     return ", ".join(parts)
 
 
+def _looks_quantity_only_options(options: list[str]) -> bool:
+    blob = " ".join(options).lower()
+    path_words = (
+        "ready",
+        "store",
+        "bakery",
+        "homemade",
+        "home-made",
+        "home made",
+        "bake",
+        "ingredient",
+        "make at",
+        "from scratch",
+        "diy",
+        "premade",
+        "pre-made",
+    )
+    qty_words = (
+        "exactly",
+        "more than",
+        "fewer",
+        "less than",
+        "about ",
+        "around ",
+        "how many",
+        "enough for",
+        "dozen",
+    )
+    has_path = any(w in blob for w in path_words)
+    has_qty = any(w in blob for w in qty_words)
+    return has_qty and not has_path
+
+
+def _user_already_chose_path(query: str) -> bool:
+    q = (query or "").lower()
+    return any(
+        w in q
+        for w in (
+            "ready-made",
+            "ready made",
+            "store-bought",
+            "store bought",
+            "bakery",
+            "homemade",
+            "home-made",
+            "home made",
+            "from scratch",
+            "mix and",
+            "cake mix",
+            "cupcake mix",
+            "ingredients to",
+            "bake at",
+            "make at home",
+            "make them",
+            "buy them ready",
+        )
+    )
+
+
+def _prefer_path_options(decision: ClarificationDecision, query: str) -> ClarificationDecision:
+    """If the model asked a weak quantity question, upgrade to fulfillment-path options."""
+    if not decision.needs_clarification:
+        return decision
+    if _user_already_chose_path(query):
+        return decision
+
+    blob = f"{decision.question} {' '.join(decision.options)}".lower()
+    has_path = any(
+        w in blob
+        for w in (
+            "ready",
+            "store",
+            "bakery",
+            "homemade",
+            "home-made",
+            "home made",
+            "bake",
+            "ingredient",
+            "make at",
+            "from scratch",
+            "diy",
+        )
+    )
+    has_qty = any(
+        w in blob
+        for w in ("exactly", "more than", "fewer", "less than", "enough", "how many", "about ", "around ")
+    )
+    if has_path and not _looks_quantity_only_options(decision.options):
+        return decision
+    if not has_qty and has_path:
+        return decision
+    if not has_qty and not _looks_quantity_only_options(decision.options):
+        return decision
+
+    decision.question = (
+        "Do you want to buy this ready-made / store-bought, or buy ingredients to make it at home?"
+    )
+    decision.options = [
+        "Ready-made / store-bought",
+        "Ingredients to make at home",
+    ]
+    decision.reason = (decision.reason or "") + " (upgraded quantity ask → fulfillment path)"
+    return decision
+
+
 async def decide_clarification(
     *,
     query: str,
@@ -137,9 +251,11 @@ async def decide_clarification(
         f"{history_block}\n\n".lstrip()
         + prior_bits
         + pref_bits
-        + f"Split items so far: {_items_blurb(list(items or []))}\n\n"
+        + f"Split items so far (may be a premature guess — do not treat as user intent): "
+        f"{_items_blurb(list(items or []))}\n\n"
         f"Latest user message:\n{query.strip()}\n\n"
-        "Decide whether clarification is required. Return JSON now."
+        "Decide whether clarification is required. Prefer fulfillment-path options "
+        "(ready-made vs make-at-home) over quantity tweaks when both apply. Return JSON now."
     )
 
     try:
@@ -157,6 +273,7 @@ async def decide_clarification(
     if decision.needs_clarification:
         decision.resolved_choice = ""
         decision.planning_guidance = ""
+    decision = _prefer_path_options(decision, query)
     return decision
 
 

@@ -28,6 +28,10 @@ Category guide:
 Rules:
 - quantity = packages/units to buy, NOT guest count.
 - Emit CONCRETE products, never category blobs like "Snacks", "Food", "Essentials", or "Electronics".
+- Ambiguous finished foods for events (bring cupcakes/cookies/cake/pizza/etc. without saying
+  ready-made vs bake): emit ONE coarse grocery item for the finished food name only
+  (e.g. "cupcakes"). Do NOT expand into mix, liners, frosting, or sprinkles yet —
+  a later clarification step will choose the path.
 - For night RV/camping power / lots of devices → electronics (portable power station + panel if useful).
 - For camping/weekend/family trips → also emit several grocery consumables:
   bottled water, trail mix or snacks, trash bags, paper towels (and sunscreen/bug spray if relevant).
