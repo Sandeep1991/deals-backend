@@ -155,7 +155,9 @@ Tune via `MIN_RERANKER_SCORE` and `MIN_SEARCH_SCORE`.
 | Module | Responsibility |
 |---|---|
 | `app/main.py` | FastAPI routes |
-| `app/orchestrator/` | LangGraph split → Send agents → merge |
+| `app/orchestrator/` | LangGraph split → clarify → trip planner → Send agents → merge |
+| `app/orchestrator/trip_planner.py` | Camping/road-trip breakdown across grocery/clothing/electronics/other |
+| `app/orchestrator/clarify.py` | Ask-back gate (family, kids food, care items, weather, make-vs-buy) |
 | `app/party_planner/` | Grocery fetch/compare subgraph helpers |
 | `app/catalog_pick.py` | Electronics LLM plan/pick/reply |
 | `app/merchants/` | Optional Kroger/Walmart API clients |

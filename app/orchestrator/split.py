@@ -33,9 +33,11 @@ Rules:
   (e.g. "cupcakes"). Do NOT expand into mix, liners, frosting, or sprinkles yet —
   a later clarification step will choose the path.
 - For night RV/camping power / lots of devices → electronics (portable power station + panel if useful).
-- For camping/weekend/family trips → also emit several grocery consumables:
+- For camping/weekend/family trips → emit grocery consumables AND (when weather/gear is in scope)
+  clothing/other seeds such as jacket or blanket; do not invent household size.
   bottled water, trail mix or snacks, trash bags, paper towels (and sunscreen/bug spray if relevant).
-  Do NOT put tents/sleeping bags under grocery.
+  Do NOT put tents/sleeping bags under grocery (use other).
+- A later trip planner may expand camping/road-trip items across categories after clarification.
 - Mixed queries must emit items in multiple categories.
 - search_terms: 1-3 short supermarket/catalog phrases.
 - Never invent brands unless the user named them.
@@ -208,6 +210,17 @@ async def split_query_node(state: OrchestratorState) -> dict:
     if looks_like_option_answer(query):
         return {
             "event_summary": query.strip()[:120] or "Clarification follow-up",
+            "items": [],
+            "preference_summary": preference_summary.model_dump(),
+        }
+
+    # Free-text replies to an open clarification ask (family counts, location, etc.)
+    from app.orchestrator.clarify import last_clarification_ask, original_user_ask
+
+    _opts, prior_ask = last_clarification_ask(history)
+    if prior_ask:
+        return {
+            "event_summary": original_user_ask(history, fallback=query)[:120] or "Trip clarification",
             "items": [],
             "preference_summary": preference_summary.model_dump(),
         }

@@ -32,12 +32,18 @@ Pack-size examples:
 - "chai tea latte for 10" → tea, milk, sweetener/honey, spices (or concentrate), cups if needed
 - "weekend camping essentials" → bottled water, snacks/trail mix, trash bags, paper towels,
   sunscreen, insect repellent, batteries, matches/lighter (skip specialty gear we cannot sell
-  like tents/sleeping bags unless the user named them)
+  like tents/sleeping bags unless the user named them or planning guidance says include gear)
+- When planning guidance includes household composition, scale food/water for that group and
+  state adults/children/pets in event_summary (do not invent counts).
+- When kids have different food needs, include kid-specific snacks/meals in addition to adult food.
+- When guidance mentions diapers/wipes/medicines, include those grocery/care SKUs.
+- Prefer items commonly sold at grocery/supercenters. For packing/camping, favor consumables
+  and household staples over specialty outdoor gear unless guidance requests weather gear.
 
 Rules:
 - required_items: every product needed (for drinks include base, dairy/alt milk, sweetener, spices).
 - Prefer items commonly sold at grocery/supercenters. For packing/camping, favor consumables
-  and household staples over specialty outdoor gear.
+  and household staples over specialty outdoor gear unless guidance requests weather gear.
 - alternative_options: OR choices (same label = pick cheapest per store).
 - search_terms: 1-3 short supermarket search phrases (not the full user sentence).
 - Think: meals/drinks → proteins, carbs, produce, dairy, condiments, beverages, spices;

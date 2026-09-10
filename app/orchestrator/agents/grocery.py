@@ -114,7 +114,10 @@ def _grocery_decompose_query(
         f"Expand these into concrete buyable products (do not leave category labels): {seeds}. "
         "For camping/weekend/family trips include water, snacks, trash bags, paper towels, "
         "and other staples as needed. "
-        "Skip tents, sleeping bags, specialty outdoor gear, and electronics/power stations."
+        "If planning guidance says kids eat differently, include kid-specific food too. "
+        "If guidance mentions diapers, wipes, or medicines, include those care items. "
+        "Skip tents, sleeping bags, specialty outdoor gear, and electronics/power stations "
+        "(other agents handle gear/clothing/power)."
     ]
     if (planning_guidance or "").strip():
         parts.append(f"User-resolved planning guidance (follow strictly):\n{planning_guidance.strip()}")
@@ -199,11 +202,12 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
 
     # Short clarification answers ("option 1") may not split into concrete SKUs.
     if planning_guidance and (not items or looks_like_option_answer(query)):
-        from app.orchestrator.clarify import seed_items_for_choice
+        from app.orchestrator.clarify import is_fulfillment_path_choice, seed_items_for_choice
 
         ask = original_user_ask(history, fallback=query)
         choice = (decision.resolved_choice if decision else "") or planning_guidance
-        items = seed_items_for_choice(choice, ask)
+        if is_fulfillment_path_choice(choice, ask):
+            items = seed_items_for_choice(choice, ask)
 
     if not items:
         return {
@@ -241,6 +245,32 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
             items = _plan_to_items(plan)
     else:
         plan = _items_to_plan(query, summary, items)
+
+    from app.orchestrator.clarify import seed_items_for_choice
+    from app.party_planner.nodes import _strip_diy_bakery_items
+
+    ask_ctx = original_user_ask(history, fallback=query)
+    plan = _strip_diy_bakery_items(
+        plan,
+        query=f"{query} {ask_ctx}",
+        guidance=planning_guidance,
+    )
+    store_bought_follow_up = any(
+        w in query.lower()
+        for w in ("store bought", "store-bought", "ready-made", "ready made", "premade", "pre-made")
+    )
+    if not plan.required_items and (planning_guidance or store_bought_follow_up):
+        from app.orchestrator.clarify import is_fulfillment_path_choice
+
+        choice = (decision.resolved_choice if decision else "") or planning_guidance or query
+        if is_fulfillment_path_choice(choice, f"{ask_ctx} {query}"):
+            items = seed_items_for_choice(choice, f"{ask_ctx} {query}")
+            plan = _items_to_plan(ask_ctx or query, summary, items)
+            plan = _strip_diy_bakery_items(
+                plan,
+                query=f"{query} {ask_ctx}",
+                guidance=planning_guidance or query,
+            )
 
     if not plan.required_items and not plan.alternative_options:
         return {
