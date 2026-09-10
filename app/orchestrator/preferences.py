@@ -31,7 +31,11 @@ return JSON only:
 
 Rules:
 - preferences: free-form tags inferred from the user (diet, brand, budget, store, organic, etc.).
-  Do NOT invent preferences they did not imply. Empty list if none.
+  Also capture household/trip composition when known as tags like
+  "household:2 adults", "household:2 children ages 5-8", "household:1 dog".
+  Do NOT invent preferences or household counts they did not imply. Empty list if none.
+- summary: when the user defines family/group size, record adults, children (ages if given),
+  and pets explicitly so later turns can justify assumptions instead of re-asking.
 - is_list_rewrite: true when the latest message is refining/replacing an EXISTING grocery list
   (e.g. asking if items are organic, make it vegan/gluten-free, swap ingredients) rather than
   starting a brand-new unrelated shopping trip.
@@ -39,7 +43,7 @@ Rules:
   otherwise []. Never put the user's question sentence in this list.
 - rewrite_guidance: how to adjust search_terms (empty string if not a rewrite).
 - Merge with prior_summary: keep older prefs unless the user clearly changed them.
-- summary must stay concise and useful for downstream grocery planning agents.
+- summary must stay concise and useful for downstream grocery and trip planning agents.
 """
 
 

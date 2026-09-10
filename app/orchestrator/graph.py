@@ -11,6 +11,7 @@ from app.orchestrator.clarify import clarify_intent_node, clarification_from_raw
 from app.orchestrator.merge import merge_results_node, to_chat_payload
 from app.orchestrator.split import split_query_node
 from app.orchestrator.state import CompositeItem, OrchestratorState
+from app.orchestrator.trip_planner import plan_trip_node
 from app.search import SearchService
 
 
@@ -64,12 +65,12 @@ def _route_by_category(state: OrchestratorState) -> list[Send]:
     return sends
 
 
-def _after_clarify(state: OrchestratorState) -> list[Send] | str:
-    """If still ambiguous, go straight to merge (ask-back). Else fan out agents."""
+def _after_clarify(state: OrchestratorState) -> str:
+    """If still ambiguous, ask-back via merge. Else run trip planner then fan out."""
     decision = clarification_from_raw(state.get("clarification"))
     if decision and decision.needs_clarification:
         return "merge_results"
-    return _route_by_category(state)
+    return "plan_trip"
 
 
 def build_orchestrator_graph(search_service: SearchService):
@@ -91,6 +92,7 @@ def build_orchestrator_graph(search_service: SearchService):
     graph = StateGraph(OrchestratorState)
     graph.add_node("split_query", split_query_node)
     graph.add_node("clarify_intent", clarify_intent_node)
+    graph.add_node("plan_trip", plan_trip_node)
     graph.add_node("grocery_agent", grocery_agent)
     graph.add_node("electronics_agent", electronics_agent)
     graph.add_node("clothing_agent", clothing_agent)
@@ -101,6 +103,7 @@ def build_orchestrator_graph(search_service: SearchService):
     graph.add_edge(START, "split_query")
     graph.add_edge("split_query", "clarify_intent")
     graph.add_conditional_edges("clarify_intent", _after_clarify)
+    graph.add_conditional_edges("plan_trip", _route_by_category)
     for node in (
         "grocery_agent",
         "electronics_agent",
