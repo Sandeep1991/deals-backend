@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from app.orchestrator.dietary import (
-    detect_dietary_constraints,
-    dietary_rewrite_prompt,
-    extract_prior_grocery_names,
-    is_dietary_follow_up,
-    items_from_prior_list,
-)
+from app.orchestrator.dietary import extract_prior_grocery_names, items_from_prior_list
 from app.orchestrator.memory import format_history_block
+from app.orchestrator.preferences import (
+    PreferenceSummary,
+    preference_rewrite_prompt,
+    preference_summary_from_raw,
+)
 from app.orchestrator.state import CategoryResult, CompositeItem, OrchestratorState
 from app.party_planner.nodes import compare_node, decompose_node, fetch_prices_node
 from app.party_planner.state import ShoppingItem, ShoppingPlan
 from app.party_planner.quantities import normalize_plan_quantities
 from app.search import SearchService
 
-# Split often emits category blobs; these must be expanded before pricing.
 _COARSE_GROCERY_NAMES = {
     "snacks",
     "snack",
@@ -53,14 +51,13 @@ def _looks_like_question_sku(name: str, query: str) -> bool:
     if n == q:
         return True
     if len(n.split()) >= 6 and any(
-        w in n for w in ("considering", "organic", "vegan", "gluten", "ingredients", "these")
+        w in n for w in ("considering", "ingredients", "these", "prefer", "instead")
     ):
         return True
     return False
 
 
 def _needs_decompose(query: str, items: list[CompositeItem]) -> bool:
-    """Expand when split only handed coarse labels or trip/meal packing intent."""
     if not items:
         return True
     if any(_is_coarse(i.name) for i in items):
@@ -128,22 +125,24 @@ def _plan_to_items(plan: ShoppingPlan) -> list[CompositeItem]:
     ]
 
 
-async def _rewrite_for_dietary(
+async def _rewrite_for_preferences(
     query: str,
     state: OrchestratorState,
     items: list[CompositeItem],
     summary: str,
+    pref: PreferenceSummary,
 ) -> tuple[ShoppingPlan, list[CompositeItem]]:
     history = list(state.get("history") or [])
-    constraints = detect_dietary_constraints(query)
-    prior_names = extract_prior_grocery_names(history)
+    prior_names = list(pref.prior_grocery_items) or extract_prior_grocery_names(history)
     if not prior_names:
         prior_names = [
             i.name for i in items if not _looks_like_question_sku(i.name, query) and not _is_coarse(i.name)
         ]
 
     history_block = format_history_block(history)
-    prompt = dietary_rewrite_prompt(query, prior_names, constraints, history_block=history_block)
+    # Ensure rewrite prompt sees the prior items we found
+    pref_for_prompt = pref.model_copy(update={"prior_grocery_items": prior_names})
+    prompt = preference_rewrite_prompt(query, pref_for_prompt, history_block=history_block)
     decomposed = await decompose_node(
         {
             "query": prompt,
@@ -160,10 +159,9 @@ async def _rewrite_for_dietary(
             plan.event_summary = summary
         return plan, _plan_to_items(plan)
 
-    # Heuristic fallback: prefix prior names with constraints and price those
-    fallback_items = items_from_prior_list(prior_names, constraints) if prior_names else items
+    fallback_items = items_from_prior_list(prior_names, pref.preferences) if prior_names else items
     fallback_items = [i for i in fallback_items if not _looks_like_question_sku(i.name, query)]
-    label = ", ".join(constraints) if constraints else "dietary"
+    label = pref.label()
     plan = _items_to_plan(query, summary or f"Revised list ({label})", fallback_items)
     plan.event_summary = plan.event_summary or f"Revised grocery list ({label})"
     return plan, fallback_items
@@ -174,13 +172,11 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
     summary = state.get("event_summary") or query
     history = list(state.get("history") or [])
     items = [i for i in (state.get("items") or []) if i.category == "grocery"]
+    pref = preference_summary_from_raw(state.get("preference_summary")) or PreferenceSummary()
+    rewrite = bool(pref.is_list_rewrite)
 
-    dietary = is_dietary_follow_up(query, history)
-
-    if not items and dietary:
-        prior = extract_prior_grocery_names(history)
-        constraints = detect_dietary_constraints(query)
-        items = items_from_prior_list(prior, constraints)
+    if not items and rewrite:
+        items = items_from_prior_list(pref.prior_grocery_items or extract_prior_grocery_names(history), pref.preferences)
 
     if not items:
         return {
@@ -189,8 +185,8 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
             ]
         }
 
-    if dietary:
-        plan, items = await _rewrite_for_dietary(query, state, items, summary)
+    if rewrite:
+        plan, items = await _rewrite_for_preferences(query, state, items, summary, pref)
     elif _needs_decompose(query, items):
         decomposed = await decompose_node(
             {
@@ -217,7 +213,7 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
             "category_results": [
                 CategoryResult(
                     category="grocery",
-                    notes=["Could not build a grocery list from that dietary follow-up."],
+                    notes=["Could not build a grocery list from that preference follow-up."],
                 )
             ]
         }
@@ -237,17 +233,17 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
     comparison = compared.get("comparison")
     ads = compared.get("ads") or []
     notes: list[str] = []
-    constraints = detect_dietary_constraints(query) if dietary else []
     if comparison is None:
         notes.append("Could not build a grocery store comparison.")
-    if dietary and constraints:
-        notes.append(f"Repriced list with preferences: {', '.join(constraints)}.")
+    if rewrite and pref.preferences:
+        notes.append(f"Repriced list using preference summary: {pref.label()}.")
 
     reply_fragment = comparison.reply if comparison else ""
-    if dietary and comparison and constraints:
+    if rewrite and comparison:
         preface = (
-            f"Updated the prior grocery list for **{' / '.join(constraints)}** options "
-            "and re-compared Kroger vs Walmart.\n\n"
+            f"Updated the prior grocery list using your preference summary"
+            f"{f' (**{pref.label()}**)' if pref.preferences else ''}"
+            " and re-compared Kroger vs Walmart.\n\n"
         )
         reply_fragment = preface + (reply_fragment or "")
 

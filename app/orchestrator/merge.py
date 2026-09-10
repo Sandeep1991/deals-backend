@@ -12,8 +12,8 @@ When a product is listed with a markdown link, keep that exact [title](url) in y
 so the shopper can open the deal. Do not invent or rewrite URLs.
 If grocery comparison exists, briefly mention which store is cheaper when clear and name
 2-4 of the priced grocery items (not just "snacks").
-If this turn is a dietary rewrite (organic/vegan/gluten-free/etc.), say that the prior list
-was updated to those options and highlight a few replacements + which store wins.
+If this turn used a preference summary rewrite, mention that the prior list was updated
+for those preferences and highlight a few replacements + which store wins.
 If electronics and grocery both appear, cover both needs.
 If prior conversation is provided, answer as a follow-up in that thread.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""
@@ -123,6 +123,12 @@ async def merge_results_node(state: OrchestratorState) -> dict:
         if block:
             context_lines.insert(0, block)
             context_lines.insert(1, "")
+    pref = state.get("preference_summary")
+    if isinstance(pref, dict) and (pref.get("summary") or pref.get("preferences")):
+        context_lines.insert(0, f"Preference summary: {pref.get('summary') or ''}")
+        if pref.get("preferences"):
+            context_lines.insert(1, f"Active preferences: {', '.join(pref['preferences'])}")
+        context_lines.insert(2, "")
     for result in results:
         context_lines.append(f"## {result.category}")
         if result.reply_fragment:
@@ -176,4 +182,5 @@ def to_chat_payload(state: OrchestratorState) -> dict:
         "mode": state.get("mode") or "search",
         "comparison": compare_out,
         "chat_id": state.get("chat_id") or None,
+        "preference_summary": state.get("preference_summary"),
     }
