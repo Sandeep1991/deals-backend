@@ -34,7 +34,19 @@ Rules:
   Do NOT put tents/sleeping bags under grocery.
 - Mixed queries must emit items in multiple categories.
 - search_terms: 1-3 short supermarket/catalog phrases.
-- Never invent brands unless the user named them."""
+- Never invent brands unless the user named them.
+- If prior conversation is provided, treat follow-ups relative to that context
+  (e.g. "cheaper one", "add drinks", "what about Walmart")."""
+
+
+def _history_prompt(state: OrchestratorState, query: str) -> str:
+    from app.orchestrator.memory import format_history_block
+
+    history = list(state.get("history") or [])
+    block = format_history_block(history)
+    if block:
+        return f"{block}\n\nCurrent user request: {query}"
+    return f"User request: {query}"
 
 
 def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
@@ -135,7 +147,7 @@ async def split_query_node(state: OrchestratorState) -> dict:
         try:
             data = await complete_json(
                 SPLIT_SYSTEM,
-                f"User request: {query}",
+                _history_prompt(state, query),
                 max_tokens=1200,
             )
             raw_items = data.get("items") or []
