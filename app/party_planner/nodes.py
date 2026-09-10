@@ -218,17 +218,24 @@ async def _quote_item(
                 ad = api_ad
                 source = "api"
 
-    # 3) Web search fallback
+    # 3) Web search fallback — try a few query shapes
     if not ad:
-        web_ad = await search_merchant_product(merchant, primary_term)
-        if (
-            web_ad
-            and _has_usable_price(web_ad)
-            and _is_plausible_grocery_price(web_ad, source="web")
-        ):
-            if _is_relevant_match(primary_term, item.name, web_ad, required_tokens=required) or not required:
-                ad = web_ad
-                source = "web"
+        web_queries = [primary_term]
+        if " " in primary_term:
+            web_queries.append(f"{primary_term} jar")
+            web_queries.append(f"{primary_term} 16 oz")
+        for wq in web_queries:
+            web_ad = await search_merchant_product(merchant, wq)
+            if not web_ad or not _has_usable_price(web_ad):
+                continue
+            if not _is_plausible_grocery_price(web_ad, source="web"):
+                continue
+            if required and not _is_relevant_match(wq, item.name, web_ad, required_tokens=required):
+                # Still allow web if title clearly includes the product nouns
+                continue
+            ad = web_ad
+            source = "web"
+            break
 
     if not ad:
         return None

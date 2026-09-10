@@ -165,42 +165,59 @@ async def search_merchant_product(merchant: str, product: str) -> Ad | None:
     if not site:
         return None
 
-    title = product.title()
-    link = f"https://www.{site}/search?q={quote_plus(product)}"
-    price = ""
+    queries = [
+        f"site:{site} {product} price",
+        f"site:{site} {product} $",
+        f'"{product}" site:{site}',
+    ]
+    best: Ad | None = None
+    best_amount: float | None = None
 
-    ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(f'site:{site} {product} price')}"
-    ddg_html = await _fetch_html(ddg_url)
-    if ddg_html:
-        title, link, price = _parse_ddg_results(ddg_html, site, product)
+    for q in queries:
+        title = product.title()
+        link = f"https://www.{site}/search?q={quote_plus(product)}"
+        price = ""
 
-    if not price or parse_price(price) is None:
-        bing_url = f"https://www.bing.com/search?q={quote_plus(f'site:{site} {product} price')}"
-        bing_html = await _fetch_html(bing_url)
-        if bing_html:
-            b_title, b_link, b_price = _parse_bing_results(bing_html, site, product)
-            if parse_price(b_price) is not None:
-                title, link, price = b_title, b_link, b_price
-            elif not ddg_html:
-                title, link, price = b_title, b_link, b_price
+        ddg_html = await _fetch_html(f"https://html.duckduckgo.com/html/?q={quote_plus(q)}")
+        if ddg_html:
+            title, link, price = _parse_ddg_results(ddg_html, site, product)
 
-    if not price or parse_price(price) is None:
-        if not ddg_html:
-            return _fallback_search_ad(merchant, product)
-        price = "See site"
+        amount = parse_price(price) if price else None
+        if amount is None:
+            bing_html = await _fetch_html(f"https://www.bing.com/search?q={quote_plus(q)}")
+            if bing_html:
+                b_title, b_link, b_price = _parse_bing_results(bing_html, site, product)
+                b_amount = parse_price(b_price)
+                if b_amount is not None:
+                    title, link, price, amount = b_title, b_link, b_price, b_amount
 
-    ad_id = f"web-{merchant.lower()}-{re.sub(r'[^a-z0-9]+', '-', product.lower()).strip('-')}"
-    return Ad(
-        id=ad_id[:120],
-        title=title,
-        description=f"Found via web search on {merchant} for '{product}'.",
-        category="grocery",
-        keywords=f"{product},{merchant},web search",
-        price=price,
-        url=link,
-        merchant=merchant,
-        source_key="web-search",
-    )
+        if amount is None:
+            continue
+        if amount < 1.25 or amount > 80:
+            continue
+
+        ad = Ad(
+            id=f"web-{merchant.lower()}-{re.sub(r'[^a-z0-9]+', '-', product.lower()).strip('-')}"[:120],
+            title=title,
+            description=f"Found via web search on {merchant} for '{product}'.",
+            category="grocery",
+            keywords=f"{product},{merchant},web search",
+            price=f"${amount:.2f}",
+            url=link,
+            merchant=merchant,
+            source_key="web-search",
+        )
+        if best is None or (best_amount is not None and abs(amount - 4.0) < abs(best_amount - 4.0)):
+            # Prefer mid-shelf grocery prices over extreme outliers when multiple hits
+            best = ad
+            best_amount = amount
+            # Good enough
+            if 1.5 <= amount <= 20:
+                return best
+
+    if best:
+        return best
+    return _fallback_search_ad(merchant, product)
 
 
 def _fallback_search_ad(merchant: str, product: str) -> Ad:

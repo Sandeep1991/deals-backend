@@ -12,6 +12,8 @@ When a product is listed with a markdown link, keep that exact [title](url) in y
 so the shopper can open the deal. Do not invent or rewrite URLs.
 If grocery comparison exists, briefly mention which store is cheaper when clear and name
 2-4 of the priced grocery items (not just "snacks").
+If grocery items could not be priced (empty quotes / "see item prices" / no dollar amounts),
+say prices are unavailable right now and do NOT invent typical prices like $1.00 or $1.50.
 If this turn used a preference summary rewrite, mention that the prior list was updated
 for those preferences and highlight a few replacements + which store wins.
 If electronics and grocery both appear, cover both needs.
