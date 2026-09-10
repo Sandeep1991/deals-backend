@@ -195,10 +195,20 @@ async def split_query_node(state: OrchestratorState) -> dict:
     state_with_pref = {**state, "preference_summary": preference_summary.model_dump()}
 
     preference_items = _preference_follow_up_items(state_with_pref)  # type: ignore[arg-type]
-    if preference_items:
+    from app.orchestrator.clarify import looks_like_option_answer
+
+    if preference_items and not looks_like_option_answer(query):
         return {
             "event_summary": f"Revised grocery list ({preference_summary.label()})",
             "items": preference_items,
+            "preference_summary": preference_summary.model_dump(),
+        }
+
+    # Bare clarification answers ("2.") — leave items empty; clarify_intent will seed.
+    if looks_like_option_answer(query):
+        return {
+            "event_summary": query.strip()[:120] or "Clarification follow-up",
+            "items": [],
             "preference_summary": preference_summary.model_dump(),
         }
 

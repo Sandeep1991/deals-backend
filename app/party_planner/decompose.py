@@ -126,11 +126,16 @@ def heuristic_decompose(query: str) -> ShoppingPlan:
             )
 
     if not required and not alternatives:
+        # Never tokenize planner prompts / chat transcripts into fake SKUs.
+        if "prior conversation" in q or "plan only grocery" in q or "user-resolved planning" in q:
+            return ShoppingPlan(event_summary=query.strip()[:120] or "Shopping list", required_items=[])
         words = re.findall(r"[a-zA-Z]+", q)
         stop = {
             "i", "want", "to", "throw", "a", "for", "my", "kids", "and", "maybe", "some", "the",
             "which", "store", "has", "great", "deals", "party", "with", "or", "should", "be",
             "made", "from", "can", "it", "possible", "need", "what", "host", "hosting",
+            "prior", "conversation", "user", "assistant", "reply", "option", "configure",
+            "fallback", "planner", "llm", "better", "results", "take", "his", "her", "school",
         }
         terms = [w for w in words if w not in stop and len(w) > 2]
         for term in terms[:6]:

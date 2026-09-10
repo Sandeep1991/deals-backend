@@ -140,6 +140,14 @@ async def summarize_preferences(
     # Prefer structured extraction when LLM omits items but rewrite is intended
     if summary.is_list_rewrite and not summary.prior_grocery_items and extracted_items:
         summary.prior_grocery_items = list(extracted_items)
+
+    # Bare clarification replies ("2.", "ready-made") are NOT grocery list rewrites.
+    from app.orchestrator.clarify import looks_like_option_answer
+
+    if looks_like_option_answer(query):
+        summary.is_list_rewrite = False
+        summary.prior_grocery_items = []
+        summary.rewrite_guidance = ""
     return summary
 
 
@@ -150,7 +158,17 @@ def _heuristic_preference_update(
     extracted_items: list[str],
 ) -> PreferenceSummary:
     """Minimal fallback when LLM is unavailable — still no hardcoded diet taxonomy."""
+    from app.orchestrator.clarify import looks_like_option_answer
+
     q = (query or "").strip()
+    if looks_like_option_answer(q):
+        return PreferenceSummary(
+            summary=prior.summary,
+            preferences=list(prior.preferences),
+            is_list_rewrite=False,
+            prior_grocery_items=[],
+            rewrite_guidance="",
+        )
     has_history = bool(history)
     looks_follow_up = has_history and (
         q.endswith("?")
