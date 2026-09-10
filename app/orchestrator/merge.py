@@ -12,10 +12,15 @@ When a product is listed with a markdown link, keep that exact [title](url) in y
 so the shopper can open the deal. Do not invent or rewrite URLs.
 If grocery comparison exists, briefly mention which store is cheaper when clear and name
 2-4 of the priced grocery items (not just "snacks").
+If grocery items could not be priced (empty quotes / "see item prices" / no dollar amounts),
+say prices are unavailable right now and do NOT invent typical prices like $1.00 or $1.50.
 If this turn used a preference summary rewrite, mention that the prior list was updated
 for those preferences and highlight a few replacements + which store wins.
 If electronics and grocery both appear, cover both needs.
 If prior conversation is provided, answer as a follow-up in that thread.
+If a category note says clarification is needed, or reply_fragment asks the user to choose
+among options, ask that question clearly and do NOT invent a shopping list, prices, or
+store comparison yet. Keep the numbered options visible.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""
 
 
@@ -39,6 +44,8 @@ def _flatten_ads(results: list[CategoryResult]) -> list[Ad]:
 
 
 def _pick_mode(results: list[CategoryResult]) -> str:
+    if any(r.category == "clarify" or "clarification" in " ".join(r.notes).lower() for r in results):
+        return "advisory"
     cats = {r.category for r in results if r.items or r.ads or r.comparison or r.notes}
     has_grocery_compare = any(r.category == "grocery" and r.comparison for r in results)
     has_electronics = any(r.category == "electronics" and r.ads for r in results)
@@ -113,6 +120,39 @@ async def merge_results_node(state: OrchestratorState) -> dict:
 
     grocery = next((r for r in results if r.category == "grocery" and r.comparison), None)
     comparison = grocery.comparison if grocery else None
+
+    # Clarification turns: return the ask-back text as-is (no priced comparison UI).
+    clarify = next(
+        (
+            r
+            for r in results
+            if r.category == "clarify"
+            or (
+                r.reply_fragment
+                and any("clarification" in n.lower() for n in r.notes)
+            )
+        ),
+        None,
+    )
+    if clarify and clarify.reply_fragment:
+        return {
+            "reply": clarify.reply_fragment.strip(),
+            "ads": [],
+            "mode": "advisory",
+            "comparison": None,
+        }
+
+    # Also honor structured clarification on state (even if category_results odd)
+    from app.orchestrator.clarify import clarification_from_raw
+
+    decision = clarification_from_raw(state.get("clarification"))
+    if decision and decision.needs_clarification:
+        return {
+            "reply": decision.reply_markdown(),
+            "ads": [],
+            "mode": "advisory",
+            "comparison": None,
+        }
 
     context_lines: list[str] = [f"User request: {query}", f"Summary: {summary}", ""]
     history = list(state.get("history") or [])

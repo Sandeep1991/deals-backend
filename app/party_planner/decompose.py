@@ -45,7 +45,10 @@ Rules:
 - Dietary rewrites (organic / vegan / gluten-free / dairy-free / keto / etc.):
   replace food items with constrained supermarket search phrases
   (e.g. "organic trail mix", "gluten-free taco shells", "oat milk" for vegan latte).
-  Keep trash bags/paper towels unless asked. Never invent an item named after the user's question."""
+  Keep trash bags/paper towels unless asked. Never invent an item named after the user's question.
+- Make vs buy / path choice: if planning guidance says ready-made vs bake-at-home
+  (or any other resolved path), follow that guidance strictly — include only products
+  for the chosen path and exclude the other path."""
 
 
 def heuristic_decompose(query: str) -> ShoppingPlan:
