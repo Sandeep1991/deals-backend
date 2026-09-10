@@ -23,19 +23,45 @@ MERCHANTS = ["Kroger", "Walmart"]
 MIN_INGREDIENT_SCORE = 0.5
 
 
-def _is_relevant_match(term: str, item_name: str, ad: Ad) -> bool:
+def _is_relevant_match(
+    term: str,
+    item_name: str,
+    ad: Ad,
+    *,
+    required_tokens: list[str] | None = None,
+) -> bool:
     haystack = f"{ad.title} {ad.keywords} {ad.description}".lower()
     name = item_name.lower().strip()
+
+    # Preference-constrained items (organic/vegan/…) must appear on the ad
+    for token in required_tokens or []:
+        tok = token.lower().strip()
+        if not tok:
+            continue
+        variants = {tok, tok.replace("-", " "), tok.replace(" ", "-")}
+        if not any(v in haystack for v in variants):
+            return False
+
     if name and name in haystack:
         return True
 
     name_words = [w for w in name.split() if len(w) > 2]
-    if len(name_words) >= 2 and all(w in haystack for w in name_words):
+    skip = set()
+    for t in required_tokens or []:
+        tl = t.lower().strip()
+        skip.add(tl)
+        skip.add(tl.replace("-", " "))
+        skip.add(tl.replace(" ", "-"))
+    product_words = [w for w in name_words if w not in skip]
+    check_words = product_words if product_words else name_words
+    if len(check_words) >= 2 and all(w in haystack for w in check_words):
+        return True
+    if len(check_words) == 1 and check_words[0] in haystack:
         return True
 
     term_l = term.lower().strip()
     if " " in term_l:
-        term_words = [w for w in term_l.split() if len(w) > 2]
+        term_words = [w for w in term_l.split() if len(w) > 2 and w not in skip]
         if term_words and all(w in haystack for w in term_words):
             return True
         return term_l in haystack
@@ -122,7 +148,22 @@ def _has_usable_price(ad: Ad | None) -> bool:
     """True when the ad has a parseable dollar amount (not blank / 'See site')."""
     if not ad:
         return False
-    return parse_price(ad.price) is not None
+    amount = parse_price(ad.price)
+    return amount is not None and amount > 0
+
+
+def _is_plausible_grocery_price(ad: Ad | None, *, source: str) -> bool:
+    if not ad:
+        return False
+    amount = parse_price(ad.price)
+    if amount is None or amount <= 0:
+        return False
+    # Web snippets often yield $1 shipping/fee crumbs
+    if source == "web" and amount < 1.25:
+        return False
+    if amount > 250:
+        return False
+    return True
 
 
 async def _quote_item(
@@ -131,12 +172,15 @@ async def _quote_item(
     item: ShoppingItem,
     people_count: int | None = None,
 ) -> ProductQuote | None:
+    from app.orchestrator.dietary import preference_tokens_from_item
+
     ad: Ad | None = None
     source = "search"
     terms = item.search_terms or [item.name]
     primary_term = terms[0] if terms else item.name
+    required = preference_tokens_from_item(item.name, None)
 
-    # 1) Azure AI Search — keep only if we can price it; otherwise keep falling through.
+    # 1) Azure AI Search — must match preference tokens (e.g. organic) when present
     for term in terms:
         results = search_service.search(
             term,
@@ -145,42 +189,46 @@ async def _quote_item(
             min_score=MIN_INGREDIENT_SCORE,
         )
         for result in results:
-            if not _is_relevant_match(term, item.name, result.ad):
+            if not _is_relevant_match(term, item.name, result.ad, required_tokens=required):
                 continue
-            if not ad:
-                ad = result.ad
-                source = "search"
-            if _has_usable_price(result.ad):
-                ad = result.ad
-                source = "search"
-                break
-        if _has_usable_price(ad):
+            if not _has_usable_price(result.ad):
+                continue
+            if not _is_plausible_grocery_price(result.ad, source="search"):
+                continue
+            ad = result.ad
+            source = "search"
+            break
+        if ad:
             break
 
-    # 2) Official merchant API (no-op when unconfigured)
-    if not _has_usable_price(ad):
+    # 2) Official merchant API
+    if not ad:
         client = client_for_merchant(merchant)
         if client and client.is_configured():
             try:
                 api_ad = await client.search_product(primary_term)
             except Exception:
                 api_ad = None
-            if _has_usable_price(api_ad):
-                ad = api_ad
-                source = "api"
-            elif api_ad and not ad:
+            if (
+                api_ad
+                and _has_usable_price(api_ad)
+                and _is_relevant_match(primary_term, item.name, api_ad, required_tokens=required)
+                and _is_plausible_grocery_price(api_ad, source="api")
+            ):
                 ad = api_ad
                 source = "api"
 
-    # 3) Web search fallback — prefer a parseable $ amount over "See site"
-    if not _has_usable_price(ad):
+    # 3) Web search fallback
+    if not ad:
         web_ad = await search_merchant_product(merchant, primary_term)
-        if _has_usable_price(web_ad):
-            ad = web_ad
-            source = "web"
-        elif web_ad and not ad:
-            ad = web_ad
-            source = "web"
+        if (
+            web_ad
+            and _has_usable_price(web_ad)
+            and _is_plausible_grocery_price(web_ad, source="web")
+        ):
+            if _is_relevant_match(primary_term, item.name, web_ad, required_tokens=required) or not required:
+                ad = web_ad
+                source = "web"
 
     if not ad:
         return None
