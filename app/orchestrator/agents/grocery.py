@@ -101,16 +101,24 @@ def _items_to_plan(query: str, summary: str, items: list[CompositeItem]) -> Shop
     return normalize_plan_quantities(plan, query)
 
 
-def _grocery_decompose_query(query: str, items: list[CompositeItem]) -> str:
+def _grocery_decompose_query(
+    query: str,
+    items: list[CompositeItem],
+    *,
+    planning_guidance: str = "",
+) -> str:
     seeds = ", ".join(dict.fromkeys(i.name for i in items if i.name)) or "camping/household staples"
-    return (
+    parts = [
         f"{query.strip()}\n\n"
         "Plan ONLY grocery and household consumables sold at Kroger or Walmart. "
         f"Expand these into concrete buyable products (do not leave category labels): {seeds}. "
         "For camping/weekend/family trips include water, snacks, trash bags, paper towels, "
         "and other staples as needed. "
         "Skip tents, sleeping bags, specialty outdoor gear, and electronics/power stations."
-    )
+    ]
+    if (planning_guidance or "").strip():
+        parts.append(f"User-resolved planning guidance (follow strictly):\n{planning_guidance.strip()}")
+    return "\n\n".join(parts)
 
 
 def _plan_to_items(plan: ShoppingPlan) -> list[CompositeItem]:
@@ -175,8 +183,24 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
     pref = preference_summary_from_raw(state.get("preference_summary")) or PreferenceSummary()
     rewrite = bool(pref.is_list_rewrite)
 
+    from app.orchestrator.clarify import clarification_from_raw
+
+    decision = clarification_from_raw(state.get("clarification"))
+    planning_guidance = (decision.planning_guidance if decision else "") or ""
+
     if not items and rewrite:
         items = items_from_prior_list(pref.prior_grocery_items or extract_prior_grocery_names(history), pref.preferences)
+
+    # Short clarification answers ("option 1") may not split into concrete SKUs.
+    if not items and planning_guidance:
+        items = [
+            CompositeItem(
+                name="event shopping list",
+                search_terms=["groceries"],
+                category="grocery",
+                quantity=1.0,
+            )
+        ]
 
     if not items:
         return {
@@ -187,10 +211,14 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
 
     if rewrite:
         plan, items = await _rewrite_for_preferences(query, state, items, summary, pref)
-    elif _needs_decompose(query, items):
+    elif _needs_decompose(query, items) or planning_guidance:
         decomposed = await decompose_node(
             {
-                "query": _grocery_decompose_query(query, items),
+                "query": _grocery_decompose_query(
+                    query,
+                    items,
+                    planning_guidance=planning_guidance,
+                ),
                 "plan": None,
                 "quotes": [],
                 "comparison": None,

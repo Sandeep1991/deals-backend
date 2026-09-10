@@ -7,65 +7,69 @@ from app.orchestrator.agents.clothing import clothing_agent_node
 from app.orchestrator.agents.electronics import electronics_agent_node
 from app.orchestrator.agents.grocery import grocery_agent_node
 from app.orchestrator.agents.stationery import advisory_agent_node, stationery_agent_node
+from app.orchestrator.clarify import clarify_intent_node, clarification_from_raw
 from app.orchestrator.merge import merge_results_node, to_chat_payload
 from app.orchestrator.split import split_query_node
 from app.orchestrator.state import CompositeItem, OrchestratorState
 from app.search import SearchService
 
 
+def _agent_payload(state: OrchestratorState, cat_items: list[CompositeItem]) -> dict:
+    return {
+        "query": state["query"],
+        "event_summary": state.get("event_summary") or state["query"],
+        "items": cat_items,
+        "category_results": [],
+        "reply": "",
+        "ads": [],
+        "mode": "",
+        "comparison": None,
+        "limit": int(state.get("limit") or 5),
+        "chat_id": state.get("chat_id") or "",
+        "history": list(state.get("history") or []),
+        "preference_summary": state.get("preference_summary"),
+        "clarification": state.get("clarification"),
+    }
+
+
 def _route_by_category(state: OrchestratorState) -> list[Send]:
     items = list(state.get("items") or [])
-    query = state["query"]
-    summary = state.get("event_summary") or query
-    limit = int(state.get("limit") or 5)
-
     by_cat: dict[str, list[CompositeItem]] = {}
     for item in items:
         by_cat.setdefault(item.category, []).append(item)
 
     sends: list[Send] = []
 
-    def _payload(cat_items: list[CompositeItem]) -> dict:
-        return {
-            "query": query,
-            "event_summary": summary,
-            "items": cat_items,
-            "category_results": [],
-            "reply": "",
-            "ads": [],
-            "mode": "",
-            "comparison": None,
-            "limit": limit,
-            "chat_id": state.get("chat_id") or "",
-            "history": list(state.get("history") or []),
-            "preference_summary": state.get("preference_summary"),
-        }
-
     if by_cat.get("grocery"):
-        sends.append(Send("grocery_agent", _payload(by_cat["grocery"])))
+        sends.append(Send("grocery_agent", _agent_payload(state, by_cat["grocery"])))
     if by_cat.get("electronics"):
-        sends.append(Send("electronics_agent", _payload(by_cat["electronics"])))
+        sends.append(Send("electronics_agent", _agent_payload(state, by_cat["electronics"])))
     if by_cat.get("clothing"):
-        sends.append(Send("clothing_agent", _payload(by_cat["clothing"])))
+        sends.append(Send("clothing_agent", _agent_payload(state, by_cat["clothing"])))
 
     stationery_items = list(by_cat.get("stationery") or [])
     other_items = list(by_cat.get("other") or [])
     if stationery_items or (other_items and not sends):
-        # Stationery agent also handles leftover "other" when it's the only path,
-        # or stationery items alongside others.
         combined = stationery_items + (other_items if stationery_items else [])
         if not combined and other_items:
             combined = other_items
         if combined:
-            sends.append(Send("stationery_agent", _payload(combined)))
+            sends.append(Send("stationery_agent", _agent_payload(state, combined)))
     elif other_items and sends:
-        # Mixed query with leftover "other" → advisory for those leftovers
-        sends.append(Send("advisory_agent", _payload(other_items)))
+        sends.append(Send("advisory_agent", _agent_payload(state, other_items)))
 
     if not sends:
-        sends.append(Send("advisory_agent", _payload(items or [])))
+        sends.append(Send("advisory_agent", _agent_payload(state, items or [])))
 
     return sends
+
+
+def _after_clarify(state: OrchestratorState) -> list[Send] | str:
+    """If still ambiguous, go straight to merge (ask-back). Else fan out agents."""
+    decision = clarification_from_raw(state.get("clarification"))
+    if decision and decision.needs_clarification:
+        return "merge_results"
+    return _route_by_category(state)
 
 
 def build_orchestrator_graph(search_service: SearchService):
@@ -86,6 +90,7 @@ def build_orchestrator_graph(search_service: SearchService):
 
     graph = StateGraph(OrchestratorState)
     graph.add_node("split_query", split_query_node)
+    graph.add_node("clarify_intent", clarify_intent_node)
     graph.add_node("grocery_agent", grocery_agent)
     graph.add_node("electronics_agent", electronics_agent)
     graph.add_node("clothing_agent", clothing_agent)
@@ -94,7 +99,8 @@ def build_orchestrator_graph(search_service: SearchService):
     graph.add_node("merge_results", merge_results_node)
 
     graph.add_edge(START, "split_query")
-    graph.add_conditional_edges("split_query", _route_by_category)
+    graph.add_edge("split_query", "clarify_intent")
+    graph.add_conditional_edges("clarify_intent", _after_clarify)
     for node in (
         "grocery_agent",
         "electronics_agent",
@@ -133,6 +139,7 @@ async def run_orchestrator(
             "chat_id": chat_id or "",
             "history": normalize_history(history, current_query=query),
             "preference_summary": preference_summary,
+            "clarification": None,
         }
     )
     return result  # type: ignore[return-value]

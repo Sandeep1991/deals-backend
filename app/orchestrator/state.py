@@ -52,3 +52,4 @@ class OrchestratorState(TypedDict):
     chat_id: str
     history: list[ChatTurn]
     preference_summary: Optional[dict]
+    clarification: Optional[dict]
