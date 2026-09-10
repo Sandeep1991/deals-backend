@@ -41,7 +41,11 @@ Rules:
 - alternative_options: OR choices (same label = pick cheapest per store).
 - search_terms: 1-3 short supermarket search phrases (not the full user sentence).
 - Think: meals/drinks → proteins, carbs, produce, dairy, condiments, beverages, spices;
-  trips/packing → water, food, hygiene, cleanup, safety basics."""
+  trips/packing → water, food, hygiene, cleanup, safety basics.
+- Dietary rewrites (organic / vegan / gluten-free / dairy-free / keto / etc.):
+  replace food items with constrained supermarket search phrases
+  (e.g. "organic trail mix", "gluten-free taco shells", "oat milk" for vegan latte).
+  Keep trash bags/paper towels unless asked. Never invent an item named after the user's question."""
 
 
 def heuristic_decompose(query: str) -> ShoppingPlan:

@@ -35,18 +35,44 @@ Rules:
 - Mixed queries must emit items in multiple categories.
 - search_terms: 1-3 short supermarket/catalog phrases.
 - Never invent brands unless the user named them.
-- If prior conversation is provided, treat follow-ups relative to that context
-  (e.g. "cheaper one", "add drinks", "what about Walmart")."""
+- If prior conversation / preference summary is provided, treat follow-ups relative to that context
+  (e.g. "cheaper one", "add drinks", dietary rewrites like organic/vegan).
+- Preference / list-rewrite follow-ups:
+  do NOT emit the question as an item name.
+  Re-emit PRIOR grocery items with search_terms that reflect the preference summary.
+  Keep trash bags/paper towels unless the user asked to change them.
+  category stays grocery."""
 
 
 def _history_prompt(state: OrchestratorState, query: str) -> str:
     from app.orchestrator.memory import format_history_block
+    from app.orchestrator.preferences import preference_summary_from_raw
 
     history = list(state.get("history") or [])
     block = format_history_block(history)
+    pref = preference_summary_from_raw(state.get("preference_summary"))
+    parts: list[str] = []
+    if pref and (pref.summary or pref.preferences):
+        parts.append(f"Preference summary: {pref.summary}")
+        if pref.preferences:
+            parts.append(f"Active preferences: {', '.join(pref.preferences)}")
     if block:
-        return f"{block}\n\nCurrent user request: {query}"
-    return f"User request: {query}"
+        parts.append(block)
+    parts.append(f"Current user request: {query}")
+    return "\n\n".join(parts)
+
+
+def _preference_follow_up_items(state: OrchestratorState) -> list[CompositeItem] | None:
+    from app.orchestrator.preferences import (
+        items_from_preference_summary,
+        preference_summary_from_raw,
+    )
+
+    pref = preference_summary_from_raw(state.get("preference_summary"))
+    if not pref or not pref.is_list_rewrite:
+        return None
+    items = items_from_preference_summary(pref)
+    return items or None
 
 
 def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
@@ -143,11 +169,40 @@ def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
 
 async def split_query_node(state: OrchestratorState) -> dict:
     query = state["query"]
+    history = list(state.get("history") or [])
+
+    # LangChain-style preference summary (rolling ConversationSummary memory)
+    from app.orchestrator.dietary import extract_prior_grocery_names
+    from app.orchestrator.preferences import (
+        preference_summary_from_raw,
+        summarize_preferences,
+    )
+
+    extracted = extract_prior_grocery_names(history)
+    prior_pref = preference_summary_from_raw(state.get("preference_summary"))
+    preference_summary = await summarize_preferences(
+        query=query,
+        history=history,
+        prior=prior_pref,
+        chat_id=str(state.get("chat_id") or ""),
+        extracted_items=extracted,
+    )
+    # Stash on state for follow-up helpers in this node
+    state_with_pref = {**state, "preference_summary": preference_summary.model_dump()}
+
+    preference_items = _preference_follow_up_items(state_with_pref)  # type: ignore[arg-type]
+    if preference_items:
+        return {
+            "event_summary": f"Revised grocery list ({preference_summary.label()})",
+            "items": preference_items,
+            "preference_summary": preference_summary.model_dump(),
+        }
+
     if is_decompose_configured():
         try:
             data = await complete_json(
                 SPLIT_SYSTEM,
-                _history_prompt(state, query),
+                _history_prompt(state_with_pref, query),  # type: ignore[arg-type]
                 max_tokens=1200,
             )
             raw_items = data.get("items") or []
@@ -157,14 +212,26 @@ async def split_query_node(state: OrchestratorState) -> dict:
                     item = CompositeItem.model_validate(raw)
                     if item.category not in {"grocery", "electronics", "clothing", "stationery", "other"}:
                         item.category = "other"
+                    if item.category == "grocery" and item.name.strip().lower() == query.strip().lower():
+                        continue
+                    if item.category == "grocery" and "?" in item.name:
+                        continue
                     items.append(item)
                 except Exception:
                     continue
             summary = str(data.get("event_summary") or query).strip() or query
             if items:
-                return {"event_summary": summary, "items": items}
+                return {
+                    "event_summary": summary,
+                    "items": items,
+                    "preference_summary": preference_summary.model_dump(),
+                }
         except (LLMNotConfiguredError, Exception):
             pass
 
     summary, items = _heuristic_split(query)
-    return {"event_summary": summary, "items": items}
+    return {
+        "event_summary": summary,
+        "items": items,
+        "preference_summary": preference_summary.model_dump(),
+    }

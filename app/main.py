@@ -13,6 +13,7 @@ from app.models import (
     CompareRequest,
     CompareResponse,
     HealthResponse,
+    PreferenceSummaryOut,
     SearchRequest,
     SearchResponse,
 )
@@ -139,14 +140,25 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # Default auto: LangGraph orchestrator (LLM split → category agents → merge).
     try:
         history = [m.model_dump() for m in (request.messages or [])]
+        prior_pref = (
+            request.preference_summary.model_dump() if request.preference_summary else None
+        )
         state = await run_orchestrator(
             request.query,
             search_service,
             limit=request.limit,
             chat_id=request.chat_id or "",
             history=history,
+            preference_summary=prior_pref,
         )
         payload = to_chat_payload(state)
+        pref_out = None
+        raw_pref = payload.get("preference_summary")
+        if isinstance(raw_pref, dict):
+            try:
+                pref_out = PreferenceSummaryOut.model_validate(raw_pref)
+            except Exception:
+                pref_out = None
         return ChatResponse(
             query=payload["query"],
             reply=payload["reply"],
@@ -155,6 +167,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             mode=payload["mode"],
             comparison=payload["comparison"],
             chat_id=payload.get("chat_id") or request.chat_id,
+            preference_summary=pref_out,
         )
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

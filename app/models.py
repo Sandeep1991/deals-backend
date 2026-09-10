@@ -85,6 +85,14 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class PreferenceSummaryOut(BaseModel):
+    summary: str = ""
+    preferences: list[str] = Field(default_factory=list)
+    is_list_rewrite: bool = False
+    prior_grocery_items: list[str] = Field(default_factory=list)
+    rewrite_guidance: str = ""
+
+
 class ChatRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=20)
@@ -93,6 +101,10 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(
         default_factory=list,
         description="Prior turns for session memory (browser is source of truth)",
+    )
+    preference_summary: Optional[PreferenceSummaryOut] = Field(
+        default=None,
+        description="Rolling LangChain-style preference summary for this chat_id",
     )
 
 
@@ -104,6 +116,7 @@ class ChatResponse(BaseModel):
     mode: str = "search"
     comparison: Optional[CompareResponse] = None
     chat_id: Optional[str] = None
+    preference_summary: Optional[PreferenceSummaryOut] = None
 
 
 class SearchRequest(BaseModel):
