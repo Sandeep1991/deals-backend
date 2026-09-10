@@ -46,18 +46,32 @@ def _strip_html(text: str) -> str:
 
 
 def _extract_price(*texts: str) -> str:
-    """Return the first parseable price string found in the given blobs."""
+    """Return the best parseable product price, skipping shipping/fee crumbs."""
+    skip_near = re.compile(
+        r"(shipping|delivery|fee|tax|subscribe|star|rating|app\b|download)",
+        re.I,
+    )
+    candidates: list[float] = []
     for text in texts:
         cleaned = _strip_html(text)
         for match in PRICE_IN_TEXT_RE.finditer(cleaned):
-            candidate = match.group(0).replace(" ", "")
-            if parse_price(candidate) is not None:
-                # Normalize to $X.XX when possible
-                amount = parse_price(candidate)
-                if amount is not None:
-                    return f"${amount:.2f}"
-                return candidate
-    return ""
+            start = max(0, match.start() - 40)
+            end = min(len(cleaned), match.end() + 40)
+            window = cleaned[start:end]
+            if skip_near.search(window):
+                continue
+            amount = parse_price(match.group(0))
+            if amount is None:
+                continue
+            # Grocery shelf prices are rarely $1.00 flat junk from SERPs
+            if amount < 1.25 or amount > 80:
+                continue
+            candidates.append(amount)
+    if not candidates:
+        return ""
+    # Prefer the median-ish first reasonable hit
+    amount = candidates[0]
+    return f"${amount:.2f}"
 
 
 async def _fetch_html(url: str) -> str | None:

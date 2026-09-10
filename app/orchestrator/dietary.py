@@ -77,25 +77,62 @@ def extract_prior_grocery_names(history: list[ChatTurn] | None) -> list[str]:
 
 
 def constrain_search_terms(name: str, preferences: list[str]) -> list[str]:
-    """Prefix food items with free-form preference tags from the summary."""
+    """Build search phrases. When preferences exist, do NOT fall back to bare
+    unconstrained terms — that caused 'organic peanut butter' to price as regular Jif.
+    """
     base = name.strip()
     if not base:
         return []
     lower = base.lower()
     if lower in _NON_FOOD:
         return [base]
-    terms = [base]
-    for pref in preferences:
-        tag = (pref or "").strip()
-        if not tag:
-            continue
-        # Avoid duplicating if name already contains the preference
-        if tag.lower() in lower:
-            continue
-        prefixed = f"{tag} {base}"
-        if prefixed.lower() not in {t.lower() for t in terms}:
-            terms.insert(0, prefixed)
+
+    prefs = [p.strip() for p in preferences if (p or "").strip()]
+    # Strip preference prefixes already on the name
+    clean = base
+    for pref in prefs:
+        if clean.lower().startswith(pref.lower() + " "):
+            clean = clean[len(pref) :].strip()
+
+    if not prefs:
+        return [clean]
+
+    terms: list[str] = []
+    for pref in prefs[:2]:
+        if pref.lower() in clean.lower():
+            candidate = clean
+        else:
+            candidate = f"{pref} {clean}"
+        if candidate.lower() not in {t.lower() for t in terms}:
+            terms.append(candidate)
     return terms[:3]
+
+
+def preference_tokens_from_item(name: str, preferences: list[str] | None = None) -> list[str]:
+    """Tokens that a priced ad must include when the shopper asked for preferences."""
+    tokens: list[str] = []
+    for pref in preferences or []:
+        p = (pref or "").strip().lower()
+        if p:
+            tokens.append(p)
+    # Also detect preference words already baked into the item name
+    lower = (name or "").lower()
+    for hint in (
+        "organic",
+        "vegan",
+        "gluten-free",
+        "gluten free",
+        "dairy-free",
+        "dairy free",
+        "keto",
+        "sugar-free",
+        "halal",
+        "kosher",
+        "non-gmo",
+    ):
+        if hint in lower and hint not in tokens:
+            tokens.append(hint)
+    return tokens
 
 
 def items_from_prior_list(
@@ -104,7 +141,6 @@ def items_from_prior_list(
 ) -> list[CompositeItem]:
     items: list[CompositeItem] = []
     for name in names:
-        # Strip previous preference prefixes when re-applying
         clean = name
         for pref in preferences:
             p = (pref or "").strip()
