@@ -12,6 +12,8 @@ When a product is listed with a markdown link, keep that exact [title](url) in y
 so the shopper can open the deal. Do not invent or rewrite URLs.
 If grocery comparison exists, briefly mention which store is cheaper when clear and name
 2-4 of the priced grocery items (not just "snacks").
+If this turn is a dietary rewrite (organic/vegan/gluten-free/etc.), say that the prior list
+was updated to those options and highlight a few replacements + which store wins.
 If electronics and grocery both appear, cover both needs.
 If prior conversation is provided, answer as a follow-up in that thread.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""

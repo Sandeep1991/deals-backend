@@ -36,7 +36,13 @@ Rules:
 - search_terms: 1-3 short supermarket/catalog phrases.
 - Never invent brands unless the user named them.
 - If prior conversation is provided, treat follow-ups relative to that context
-  (e.g. "cheaper one", "add drinks", "what about Walmart")."""
+  (e.g. "cheaper one", "add drinks", "what about Walmart").
+- Dietary / preference follow-ups (organic, vegan, gluten-free, dairy-free, keto, etc.):
+  do NOT emit the question as an item name.
+  Instead re-emit the PRIOR grocery items with search_terms that include the constraint
+  (e.g. name "organic trail mix", search_terms ["organic trail mix", "trail mix"]).
+  Keep trash bags/paper towels unless the user asked to change them.
+  category stays grocery."""
 
 
 def _history_prompt(state: OrchestratorState, query: str) -> str:
@@ -47,6 +53,24 @@ def _history_prompt(state: OrchestratorState, query: str) -> str:
     if block:
         return f"{block}\n\nCurrent user request: {query}"
     return f"User request: {query}"
+
+
+def _dietary_follow_up_items(state: OrchestratorState, query: str) -> list[CompositeItem] | None:
+    from app.orchestrator.dietary import (
+        detect_dietary_constraints,
+        extract_prior_grocery_names,
+        is_dietary_follow_up,
+        items_from_prior_list,
+    )
+
+    history = list(state.get("history") or [])
+    if not is_dietary_follow_up(query, history):
+        return None
+    constraints = detect_dietary_constraints(query)
+    prior = extract_prior_grocery_names(history)
+    if not prior:
+        return None
+    return items_from_prior_list(prior, constraints)
 
 
 def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
@@ -143,6 +167,20 @@ def _heuristic_split(query: str) -> tuple[str, list[CompositeItem]]:
 
 async def split_query_node(state: OrchestratorState) -> dict:
     query = state["query"]
+
+    # Dietary follow-ups: rebuild grocery items from prior list before LLM split,
+    # so we never price the question sentence as a SKU.
+    dietary_items = _dietary_follow_up_items(state, query)
+    if dietary_items:
+        from app.orchestrator.dietary import detect_dietary_constraints
+
+        constraints = detect_dietary_constraints(query)
+        label = ", ".join(constraints) if constraints else "dietary"
+        return {
+            "event_summary": f"Revised grocery list ({label})",
+            "items": dietary_items,
+        }
+
     if is_decompose_configured():
         try:
             data = await complete_json(
@@ -157,6 +195,11 @@ async def split_query_node(state: OrchestratorState) -> dict:
                     item = CompositeItem.model_validate(raw)
                     if item.category not in {"grocery", "electronics", "clothing", "stationery", "other"}:
                         item.category = "other"
+                    # Guard: never keep the raw question as a grocery SKU
+                    if item.category == "grocery" and item.name.strip().lower() == query.strip().lower():
+                        continue
+                    if item.category == "grocery" and "?" in item.name:
+                        continue
                     items.append(item)
                 except Exception:
                     continue
