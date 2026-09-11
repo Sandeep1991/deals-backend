@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Optional, TypedDict
+from typing import Annotated, Any, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,14 @@ def merge_category_results(
     return list(existing) + list(new)
 
 
+def merge_intent_clarifications(
+    existing: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reducer for parallel per-intent ReAct clarify outputs."""
+    return list(existing or []) + list(new or [])
+
+
 class ChatTurn(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
@@ -53,3 +61,7 @@ class OrchestratorState(TypedDict):
     history: list[ChatTurn]
     preference_summary: Optional[dict]
     clarification: Optional[dict]
+    # Per-intent ReAct clarify results (parallel Send → gather).
+    intent_clarifications: Annotated[list[dict[str, Any]], merge_intent_clarifications]
+    # Which intent the clarify_react node should handle (set via Send payload).
+    clarify_intent: str

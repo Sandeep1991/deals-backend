@@ -128,6 +128,36 @@ def _heuristic_trip_items(
     return items
 
 
+def _ensure_dual_intents(
+    items: list[CompositeItem],
+    *,
+    ask: str,
+    query: str,
+    planning_guidance: str,
+) -> list[CompositeItem]:
+    """Keep both camping groceries and electronics when the ask has both intents."""
+    out = list(items)
+    ask_blob = f"{ask} {query} {planning_guidance}".lower()
+    wants_power = any(
+        w in ask_blob
+        for w in ("electronic", "device", "power", "charger", "laptop", "phone", "solar", "battery")
+    )
+    if wants_power and not any(i.category == "electronics" for i in out):
+        out.append(
+            CompositeItem(
+                name="portable power station",
+                search_terms=["portable power station", "C1000", "portable solar generator"],
+                category="electronics",
+                quantity=1.0,
+            )
+        )
+    if not any(i.category == "grocery" for i in out):
+        for extra in _heuristic_trip_items(ask or query, planning_guidance=planning_guidance, existing=[]):
+            if extra.category == "grocery" and not any(i.name == extra.name for i in out):
+                out.append(extra)
+    return out
+
+
 async def plan_trip_node(state: OrchestratorState) -> dict:
     """Expand camping/road-trip asks into multi-category items for agent fan-out."""
     query = state.get("query") or ""
@@ -143,6 +173,14 @@ async def plan_trip_node(state: OrchestratorState) -> dict:
         return {}
 
     planning_guidance = (decision.planning_guidance if decision else "") or ""
+    # If history shows a ready-made power choice but guidance omitted it, add it.
+    if "power" not in planning_guidance.lower() and any(
+        w in f"{ask} {query}".lower() for w in ("electronic", "device", "power", "charger")
+    ):
+        planning_guidance = (
+            f"{planning_guidance} Include ready-made portable power station for devices."
+        ).strip()
+
     pref = preference_summary_from_raw(state.get("preference_summary"))
     pref_bits = ""
     if pref and (pref.summary or pref.preferences):
@@ -153,12 +191,31 @@ async def plan_trip_node(state: OrchestratorState) -> dict:
     history_block = format_history_block(history)
     seeds = ", ".join(f"{i.name} [{i.category}]" for i in existing[:12]) or "(none)"
 
+    def _pack(items: list[CompositeItem], summary: str, steps: list | None = None) -> dict:
+        items = _ensure_dual_intents(
+            items, ask=ask or query, query=query, planning_guidance=planning_guidance
+        )
+        summary = (summary or ask or query)[:200]
+        ask_blob = f"{ask} {query} {planning_guidance}".lower()
+        if any(w in ask_blob for w in ("electronic", "device", "power")) and not any(
+            w in summary.lower() for w in ("power", "electronic", "device")
+        ):
+            summary = f"{summary} (incl. portable power for devices)".strip()[:200]
+        out: dict[str, Any] = {"event_summary": summary, "items": items}
+        if decision and (planning_guidance or steps):
+            merged = planning_guidance
+            if steps:
+                step_txt = "; ".join(str(s) for s in steps[:6] if s)
+                if step_txt:
+                    merged = f"{merged}\nTrip steps: {step_txt}".strip()
+            out_clar = decision.model_dump()
+            out_clar["planning_guidance"] = merged
+            out["clarification"] = out_clar
+        return out
+
     if not is_decompose_configured():
         items = _heuristic_trip_items(ask or query, planning_guidance=planning_guidance, existing=existing)
-        return {
-            "event_summary": (state.get("event_summary") or ask or query)[:160],
-            "items": items,
-        }
+        return _pack(items, state.get("event_summary") or ask or query)
 
     user_prompt = (
         f"{history_block}\n\n".lstrip()
@@ -167,17 +224,15 @@ async def plan_trip_node(state: OrchestratorState) -> dict:
         + f"Existing split seeds (refine/expand, do not ignore guidance): {seeds}\n\n"
         + f"Original trip request:\n{(ask or query).strip()}\n\n"
         + f"Latest user message:\n{query.strip()}\n\n"
-        + "Return the trip plan JSON now."
+        + "Return the trip plan JSON now. Always include BOTH grocery consumables and "
+        "electronics/power items when the request mentions devices/electronics."
     )
 
     try:
         data = await complete_json(TRIP_PLANNER_SYSTEM, user_prompt, max_tokens=1400)
     except (LLMNotConfiguredError, Exception):
         items = _heuristic_trip_items(ask or query, planning_guidance=planning_guidance, existing=existing)
-        return {
-            "event_summary": (state.get("event_summary") or ask or query)[:160],
-            "items": items,
-        }
+        return _pack(items, state.get("event_summary") or ask or query)
 
     raw_items = data.get("items") or []
     items: list[CompositeItem] = []
@@ -197,19 +252,4 @@ async def plan_trip_node(state: OrchestratorState) -> dict:
 
     steps = data.get("planning_steps") or []
     summary = str(data.get("event_summary") or state.get("event_summary") or ask or query).strip()
-    if isinstance(steps, list) and steps:
-        # Keep summary readable; steps are for the planner/agents via guidance merge
-        step_txt = "; ".join(str(s) for s in steps[:6] if s)
-        if decision and (decision.planning_guidance or step_txt):
-            merged = (decision.planning_guidance or "").strip()
-            if step_txt:
-                merged = f"{merged}\nTrip steps: {step_txt}".strip()
-            out_clar: dict[str, Any] = decision.model_dump()
-            out_clar["planning_guidance"] = merged
-            return {
-                "event_summary": summary[:200],
-                "items": items,
-                "clarification": out_clar,
-            }
-
-    return {"event_summary": summary[:200], "items": items}
+    return _pack(items, summary, steps if isinstance(steps, list) else None)

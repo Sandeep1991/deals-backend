@@ -18,9 +18,14 @@ If this turn used a preference summary rewrite, mention that the prior list was 
 for those preferences and highlight a few replacements + which store wins.
 If electronics and grocery both appear, cover both needs.
 If prior conversation is provided, answer as a follow-up in that thread.
+If planning guidance or notes say session facts were reused (household size, power capacity,
+kids food, weather, etc.), briefly say you are using those specific details when explaining
+why you chose the list / offers (e.g. "Using your earlier note of 2 adults + 1 kid…").
 If a category note says clarification is needed, or reply_fragment asks the user to choose
-among options, ask that question clearly and do NOT invent a shopping list, prices, or
-store comparison yet. Keep the numbered options visible.
+among options (including multiple lettered questions A/B/C for different intents), ask
+those questions clearly and do NOT invent a shopping list, prices, or store comparison yet.
+When the clarify reply includes "**Using from this chat:**", keep that section visible.
+Keep lettered sections and numbered options visible.
 Avoid canned phrases like "I found N deals" or "click any deal card"."""
 
 
@@ -93,7 +98,22 @@ def _template_merge(query: str, summary: str, results: list[CategoryResult]) -> 
     parts: list[str] = []
     if summary:
         parts.append(f"**{summary}**")
+    # Surface reused session facts before priced results when present.
     for result in results:
+        if result.category == "session_context" and result.notes:
+            parts.append("**Using from this chat:**")
+            for note in result.notes:
+                if note.lower().startswith("reused session facts:"):
+                    detail = note.split(":", 1)[-1].strip()
+                    for bit in detail.split(","):
+                        bit = bit.strip()
+                        if bit:
+                            parts.append(f"- {bit}")
+                else:
+                    parts.append(f"- {note}")
+    for result in results:
+        if result.category == "session_context":
+            continue
         if result.reply_fragment:
             parts.append(result.reply_fragment)
             continue
@@ -169,6 +189,14 @@ async def merge_results_node(state: OrchestratorState) -> dict:
         if pref.get("preferences"):
             context_lines.insert(1, f"Active preferences: {', '.join(pref['preferences'])}")
         context_lines.insert(2, "")
+    decision_for_facts = clarification_from_raw(state.get("clarification"))
+    if decision_for_facts and (decision_for_facts.planning_guidance or "").strip():
+        context_lines.insert(
+            0,
+            "Planning guidance / session facts to cite when relevant:\n"
+            + decision_for_facts.planning_guidance.strip(),
+        )
+        context_lines.insert(1, "")
     for result in results:
         context_lines.append(f"## {result.category}")
         if result.reply_fragment:

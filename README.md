@@ -157,7 +157,8 @@ Tune via `MIN_RERANKER_SCORE` and `MIN_SEARCH_SCORE`.
 | `app/main.py` | FastAPI routes |
 | `app/orchestrator/` | LangGraph split → clarify → trip planner → Send agents → merge |
 | `app/orchestrator/trip_planner.py` | Camping/road-trip breakdown across grocery/clothing/electronics/other |
-| `app/orchestrator/clarify.py` | Ask-back gate (family, kids food, care items, weather, make-vs-buy) |
+| `app/orchestrator/clarify.py` | Aggregates multi-intent planner questions before pricing |
+| `app/orchestrator/planner_clarify.py` | Trip/grocery/electronics/clothing planners declare clarification needs |
 | `app/party_planner/` | Grocery fetch/compare subgraph helpers |
 | `app/catalog_pick.py` | Electronics LLM plan/pick/reply |
 | `app/merchants/` | Optional Kroger/Walmart API clients |
