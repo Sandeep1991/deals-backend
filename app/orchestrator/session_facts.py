@@ -38,6 +38,7 @@ _LABELS = {
     "party_size": "Household / group size",
     "ages": "Ages",
     "pets": "Pets",
+    "meal_count": "Meals covered",
     "kids_food": "Kids vs adult food",
     "care_items": "Care items",
     "weather_gear": "Location / weather / gear",
@@ -230,6 +231,26 @@ def extract_session_facts(
             )
             break
 
+    meal_patterns = [
+        (r"\b(\d+)\s*meals?\b", None),
+        (r"full camping weekend|fri.*sun|~?\s*6 meals", "Full camping weekend (~6 meals)"),
+        (r"one meal|single meal|just dinner|one gathering", "One meal / one gathering"),
+        (r"breakfast|lunch|dinner", "Specific meals noted in chat"),
+    ]
+    for pat, value in meal_patterns:
+        src = _locate_source(
+            needle_re=pat, query=query, history=history, preference_summary=preference_summary
+        )
+        if not src:
+            continue
+        if value is None:
+            m = re.search(r"\b(\d+)\s*meals?\b", combined, re.I)
+            value = f"{m.group(1)} meals" if m else "Meal count noted in chat"
+        facts.append(
+            SessionFact(key="meal_count", label=_LABELS["meal_count"], value=value, source=src)
+        )
+        break
+
     # De-dupe by key (first wins).
     seen: set[str] = set()
     out: list[SessionFact] = []
@@ -244,8 +265,17 @@ def extract_session_facts(
 def facts_for_intent(facts: list[SessionFact], intent: str) -> list[SessionFact]:
     """Filter facts that matter for a given shopping intent."""
     relevant = {
-        "trip": {"party_size", "ages", "pets", "kids_food", "care_items", "weather_gear", "power_capacity"},
-        "grocery": {"party_size", "kids_food", "care_items", "fulfillment_path"},
+        "trip": {
+            "party_size",
+            "ages",
+            "pets",
+            "meal_count",
+            "kids_food",
+            "care_items",
+            "weather_gear",
+            "power_capacity",
+        },
+        "grocery": {"party_size", "meal_count", "kids_food", "care_items", "fulfillment_path"},
         "electronics": {"power_capacity", "party_size"},
         "clothing": {"weather_gear", "party_size"},
         "other": {"party_size", "weather_gear"},
