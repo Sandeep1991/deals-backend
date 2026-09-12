@@ -237,6 +237,29 @@ def trip_planner_needs(
     return needs
 
 
+def _bakery_fulfillment_question(text: str) -> str:
+    """Product-specific ready-made vs bake wording when we can detect the treat."""
+    t = (text or "").lower()
+    for label, needles in (
+        ("cupcakes", ("cupcake", "cup cake")),
+        ("cookies", ("cookie",)),
+        ("muffins", ("muffin",)),
+        ("brownies", ("brownie",)),
+        ("cake", ("cake",)),
+        ("donuts", ("donut", "doughnut")),
+        ("pizza", ("pizza",)),
+    ):
+        if any(n in t for n in needles):
+            return (
+                f"Do you want ready-made / store-bought {label}, "
+                f"or ingredients to make {label} at home?"
+            )
+    return (
+        "For the food/treats, do you want ready-made / store-bought, "
+        "or ingredients to make at home?"
+    )
+
+
 def grocery_planner_needs(
     *,
     query: str,
@@ -320,7 +343,7 @@ def grocery_planner_needs(
                         similarity_key="fulfillment_path",
                         id="grocery.fulfillment",
                         intent="grocery",
-                        question="For the food/treats, do you want ready-made / store-bought, or ingredients to make at home?",
+                        question=_bakery_fulfillment_question(text),
                         options=[
                             "Ready-made / store-bought",
                             "Ingredients to make at home",
@@ -535,10 +558,48 @@ def format_multi_clarify_reply(
                 lines.append(f"   {j}. {opt}")
         lines.append("")
     lines.append(
-        "Reply with answers per letter (e.g. `A: 2 adults + 1 kid age 5; B: weekend power station`) "
-        "and I'll continue planning."
+        "Tap an option below, or reply with answers per letter "
+        "(e.g. `A: Ready-made / store-bought`)."
     )
     return "\n".join(lines).strip()
+
+
+def clarification_prompt_payload(needs: list[ClarificationNeed]) -> dict:
+    """Structured clarify payload for clickable UI clients."""
+    intent_labels = {
+        "trip": "Trip / camping",
+        "grocery": "Grocery / food",
+        "electronics": "Electronics / power",
+        "clothing": "Clothing / gear",
+        "other": "Other",
+    }
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    questions = []
+    for i, need in enumerate(needs):
+        letter = letters[i] if i < len(letters) else str(i + 1)
+        questions.append(
+            {
+                "id": need.id,
+                "letter": letter,
+                "intent": need.intent,
+                "intent_label": intent_labels.get(need.intent, need.intent),
+                "question": need.question,
+                "options": list(need.options or []),
+                "similarity_key": need.similarity_key,
+            }
+        )
+    intro_bits = sorted({q["intent_label"] for q in questions})
+    if len(intro_bits) > 1:
+        intro = f"Before I plan {' + '.join(intro_bits)}, I need a few details:"
+    elif intro_bits:
+        intro = f"Before I plan {intro_bits[0]}, I need a few details:"
+    else:
+        intro = "I need a few details before planning:"
+    return {
+        "needs_clarification": True,
+        "intro": intro,
+        "questions": questions,
+    }
 
 
 def looks_like_multi_clarify_answer(query: str, history: list[ChatTurn] | None) -> bool:
