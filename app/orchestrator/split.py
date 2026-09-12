@@ -206,22 +206,58 @@ async def split_query_node(state: OrchestratorState) -> dict:
             "preference_summary": preference_summary.model_dump(),
         }
 
-    # Bare clarification answers ("2.") — leave items empty; clarify_intent will seed.
-    if looks_like_option_answer(query):
+    # Clarification resumes: re-split the original shopping ask so search agents have items.
+    from app.orchestrator.clarify import last_clarification_ask, original_user_ask
+    from app.orchestrator.planner_clarify import looks_like_multi_clarify_answer
+
+    answering_clarify = looks_like_multi_clarify_answer(query, history)
+    _opts, prior_ask = last_clarification_ask(history)
+    if looks_like_option_answer(query) and not answering_clarify and not prior_ask:
         return {
             "event_summary": query.strip()[:120] or "Clarification follow-up",
             "items": [],
             "preference_summary": preference_summary.model_dump(),
         }
 
-    # Free-text replies to an open clarification ask (family counts, location, etc.)
-    from app.orchestrator.clarify import last_clarification_ask, original_user_ask
-
-    _opts, prior_ask = last_clarification_ask(history)
-    if prior_ask:
+    if prior_ask or answering_clarify:
+        ask = original_user_ask(history, fallback=query)
+        try:
+            if is_decompose_configured() and ask:
+                data = await complete_json(
+                    SPLIT_SYSTEM,
+                    _history_prompt({**state_with_pref, "history": history}, ask),  # type: ignore[arg-type]
+                    max_tokens=1200,
+                )
+                raw_items = data.get("items") or []
+                items = []
+                for raw in raw_items:
+                    try:
+                        item = CompositeItem.model_validate(raw)
+                        if item.category not in {
+                            "grocery",
+                            "electronics",
+                            "clothing",
+                            "stationery",
+                            "other",
+                        }:
+                            item.category = "other"
+                        if "?" in item.name:
+                            continue
+                        items.append(item)
+                    except Exception:
+                        continue
+                if items:
+                    return {
+                        "event_summary": str(data.get("event_summary") or ask).strip()[:120],
+                        "items": items,
+                        "preference_summary": preference_summary.model_dump(),
+                    }
+        except (LLMNotConfiguredError, Exception):
+            pass
+        summary, items = _heuristic_split(ask or query)
         return {
-            "event_summary": original_user_ask(history, fallback=query)[:120] or "Trip clarification",
-            "items": [],
+            "event_summary": summary,
+            "items": items,
             "preference_summary": preference_summary.model_dump(),
         }
 

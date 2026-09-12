@@ -7,8 +7,11 @@ from app.orchestrator.agents.clothing import clothing_agent_node
 from app.orchestrator.agents.electronics import electronics_agent_node
 from app.orchestrator.agents.grocery import grocery_agent_node
 from app.orchestrator.agents.stationery import advisory_agent_node, stationery_agent_node
-from app.orchestrator.clarify import clarify_intent_node, clarification_from_raw
+from app.orchestrator.clarify import clarification_from_raw
+from app.orchestrator.gather_clarify import gather_clarifications_node
+from app.orchestrator.intent_react import clarify_react_node
 from app.orchestrator.merge import merge_results_node, to_chat_payload
+from app.orchestrator.planner_clarify import active_intents
 from app.orchestrator.split import split_query_node
 from app.orchestrator.state import CompositeItem, OrchestratorState
 from app.orchestrator.trip_planner import plan_trip_node
@@ -16,6 +19,16 @@ from app.search import SearchService
 
 
 def _agent_payload(state: OrchestratorState, cat_items: list[CompositeItem]) -> dict:
+    clarification = state.get("clarification")
+    # Prefer combined gather guidance; fall back to merged per-intent guidance.
+    if isinstance(clarification, dict) and not (clarification.get("planning_guidance") or "").strip():
+        parts = []
+        for block in state.get("intent_clarifications") or []:
+            g = (block.get("guidance") or "").strip()
+            if g:
+                parts.append(f"[{block.get('intent')}] {g}")
+        if parts:
+            clarification = {**clarification, "planning_guidance": "\n".join(parts)}
     return {
         "query": state["query"],
         "event_summary": state.get("event_summary") or state["query"],
@@ -29,8 +42,38 @@ def _agent_payload(state: OrchestratorState, cat_items: list[CompositeItem]) -> 
         "chat_id": state.get("chat_id") or "",
         "history": list(state.get("history") or []),
         "preference_summary": state.get("preference_summary"),
-        "clarification": state.get("clarification"),
+        "clarification": clarification,
+        "intent_clarifications": list(state.get("intent_clarifications") or []),
+        "clarify_intent": "",
     }
+
+
+def _clarify_payload(state: OrchestratorState, intent: str) -> dict:
+    payload = _agent_payload(state, list(state.get("items") or []))
+    payload["clarify_intent"] = intent
+    payload["intent_clarifications"] = []
+    payload["category_results"] = []
+    return payload
+
+
+def _route_clarify_intents(state: OrchestratorState) -> list[Send]:
+    """Fan out one ReAct clarify loop per active intent."""
+    query = state.get("query") or ""
+    history = list(state.get("history") or [])
+    items = list(state.get("items") or [])
+    intents = active_intents(query, history, items)
+    if not intents:
+        # Always run at least grocery-style clarify when split produced grocery items
+        cats = {i.category for i in items}
+        if "electronics" in cats:
+            intents.add("electronics")
+        if "grocery" in cats:
+            intents.add("grocery")
+        if "clothing" in cats:
+            intents.add("clothing")
+        if not intents:
+            intents.add("grocery")
+    return [Send("clarify_react", _clarify_payload(state, intent)) for intent in sorted(intents)]
 
 
 def _route_by_category(state: OrchestratorState) -> list[Send]:
@@ -65,8 +108,8 @@ def _route_by_category(state: OrchestratorState) -> list[Send]:
     return sends
 
 
-def _after_clarify(state: OrchestratorState) -> str:
-    """If still ambiguous, ask-back via merge. Else run trip planner then fan out."""
+def _after_gather(state: OrchestratorState) -> str:
+    """Ask-back via merge, or expand trip then search."""
     decision = clarification_from_raw(state.get("clarification"))
     if decision and decision.needs_clarification:
         return "merge_results"
@@ -91,7 +134,8 @@ def build_orchestrator_graph(search_service: SearchService):
 
     graph = StateGraph(OrchestratorState)
     graph.add_node("split_query", split_query_node)
-    graph.add_node("clarify_intent", clarify_intent_node)
+    graph.add_node("clarify_react", clarify_react_node)
+    graph.add_node("gather_clarifications", gather_clarifications_node)
     graph.add_node("plan_trip", plan_trip_node)
     graph.add_node("grocery_agent", grocery_agent)
     graph.add_node("electronics_agent", electronics_agent)
@@ -101,8 +145,9 @@ def build_orchestrator_graph(search_service: SearchService):
     graph.add_node("merge_results", merge_results_node)
 
     graph.add_edge(START, "split_query")
-    graph.add_edge("split_query", "clarify_intent")
-    graph.add_conditional_edges("clarify_intent", _after_clarify)
+    graph.add_conditional_edges("split_query", _route_clarify_intents)
+    graph.add_edge("clarify_react", "gather_clarifications")
+    graph.add_conditional_edges("gather_clarifications", _after_gather)
     graph.add_conditional_edges("plan_trip", _route_by_category)
     for node in (
         "grocery_agent",
@@ -143,6 +188,8 @@ async def run_orchestrator(
             "history": normalize_history(history, current_query=query),
             "preference_summary": preference_summary,
             "clarification": None,
+            "intent_clarifications": [],
+            "clarify_intent": "",
         }
     )
     return result  # type: ignore[return-value]
