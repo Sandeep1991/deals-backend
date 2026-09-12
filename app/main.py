@@ -159,6 +159,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 pref_out = PreferenceSummaryOut.model_validate(raw_pref)
             except Exception:
                 pref_out = None
+        clar_out = None
+        raw_clar = payload.get("clarification")
+        if isinstance(raw_clar, dict):
+            try:
+                from app.models import ClarificationPromptOut
+
+                clar_out = ClarificationPromptOut.model_validate(raw_clar)
+            except Exception:
+                clar_out = None
         return ChatResponse(
             query=payload["query"],
             reply=payload["reply"],
@@ -168,6 +177,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             comparison=payload["comparison"],
             chat_id=payload.get("chat_id") or request.chat_id,
             preference_summary=pref_out,
+            clarification=clar_out,
         )
     except SearchNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

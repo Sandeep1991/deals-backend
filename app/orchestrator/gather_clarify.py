@@ -21,31 +21,68 @@ from app.orchestrator.state import CategoryResult, OrchestratorState
 
 def dedupe_needs(needs: list[ClarificationNeed]) -> list[ClarificationNeed]:
     """Collapse same similarity_key across intents; keep distinct keys."""
+    from app.orchestrator.intent_react import _infer_similarity_key
+
     by_key: dict[str, ClarificationNeed] = {}
     no_key: list[ClarificationNeed] = []
     sources: dict[str, list[str]] = {}
 
     for need in needs:
         key = (need.similarity_key or "").strip()
+        if not key or key.endswith(".custom") or ".custom_" in key:
+            inferred = _infer_similarity_key(need.question, need.options)
+            if inferred:
+                key = inferred
         if not key:
-            no_key.append(need)
-            continue
+            # Last-chance: treat ready-made/bake paraphrases as fulfillment.
+            inferred = _infer_similarity_key(need.question, need.options)
+            if inferred:
+                key = inferred
+            else:
+                no_key.append(need)
+                continue
         sources.setdefault(key, []).append(need.id)
         existing = by_key.get(key)
         if existing is None:
-            by_key[key] = need
+            by_key[key] = ClarificationNeed(
+                id=need.id,
+                intent=need.intent,
+                question=need.question,
+                options=need.options,
+                reason=need.reason,
+                similarity_key=key,
+            )
             continue
-        # Prefer neutral shared wording for party size when multiple intents ask.
-        question = existing.question
+        # Prefer stable seed ids / wording over LLM paraphrases.
+        def _is_seed_id(nid: str) -> bool:
+            n = nid or ""
+            if ".custom" in n:
+                return False
+            return n.startswith(("grocery.", "trip.", "electronics.", "clothing.", "shared."))
+
+        prefer_existing = _is_seed_id(existing.id) and not _is_seed_id(need.id)
+        prefer_new = _is_seed_id(need.id) and not _is_seed_id(existing.id)
+        if prefer_new:
+            question = need.question or existing.question
+            options = need.options or existing.options
+            keep_id = need.id
+        elif prefer_existing:
+            question = existing.question
+            options = existing.options or need.options
+            keep_id = existing.id
+        else:
+            question = existing.question or need.question
+            options = existing.options or need.options
+            keep_id = existing.id
         if key == "party_size":
             question = (
                 "Who is this for — how many adults, children (ages if useful), and pets?"
             )
         by_key[key] = ClarificationNeed(
-            id=f"shared.{key}",
+            id=f"shared.{key}" if len(sources[key]) > 1 else keep_id,
             intent=existing.intent,
             question=question,
-            options=existing.options or need.options,
+            options=options,
             reason=f"deduped from {', '.join(sources[key])}",
             similarity_key=key,
         )

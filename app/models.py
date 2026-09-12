@@ -108,6 +108,22 @@ class ChatRequest(BaseModel):
     )
 
 
+class ClarificationQuestionOut(BaseModel):
+    id: str = ""
+    letter: str = ""
+    intent: str = ""
+    intent_label: str = ""
+    question: str = ""
+    options: list[str] = Field(default_factory=list)
+    similarity_key: str = ""
+
+
+class ClarificationPromptOut(BaseModel):
+    needs_clarification: bool = True
+    intro: str = ""
+    questions: list[ClarificationQuestionOut] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     query: str
     reply: str
@@ -117,6 +133,7 @@ class ChatResponse(BaseModel):
     comparison: Optional[CompareResponse] = None
     chat_id: Optional[str] = None
     preference_summary: Optional[PreferenceSummaryOut] = None
+    clarification: Optional[ClarificationPromptOut] = None
 
 
 class SearchRequest(BaseModel):

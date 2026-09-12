@@ -47,11 +47,13 @@ Return JSON only for ONE action per step:
 Rules:
 - If session facts already answer a seed question, do NOT ask_user for that topic — use the fact.
 - Prefer suggested seed questions only when still unresolved after session facts.
+- When asking, ALWAYS reuse a seed id + similarity_key when one matches the topic.
+  Never invent a second ready-made vs bake / make-at-home question if fulfillment_path is already asked or seeded.
 - Use similarity_key so overlapping asks (party size / ages) can be deduped across intents.
 - Do NOT ask ready-made vs DIY for electronics/power — ask capacity/use-case instead.
 - mark_intent_ready when this intent can search; guidance MUST name the specific session facts used
   (e.g. "Using household 2 adults + 1 kid from chat; weekend power station from earlier answer").
-- ask_user at most 2 times in this loop; then mark ready or stop with remaining questions recorded.
+- ask_user at most ONCE when only one seed topic remains; at most 2 times otherwise.
 """
 
 
@@ -312,18 +314,25 @@ async def run_intent_react(
             used_facts=used_facts_dump,
         )
 
+    # Fast path: clear seed asks only — avoid LLM paraphrasing into duplicate questions.
+    if seeds and all(
+        s.similarity_key in {"fulfillment_path", "meal_count", "party_size"} for s in seeds
+    ) and len({s.similarity_key for s in seeds}) <= 2:
+        return IntentClarification(
+            intent=intent,
+            ready=False,
+            questions=[n.model_dump() for n in seeds],
+            guidance=fact_guidance,
+            reason="deterministic seed asks (skip react paraphrase)",
+            used_facts=used_facts_dump,
+        )
+
     asked: list[ClarificationNeed] = []
     observations: list[str] = []
     guidance = fact_guidance
 
     for step in range(MAX_REACT_STEPS):
-        remaining = [
-            s
-            for s in seeds
-            if s.id not in {a.id for a in asked}
-            and s.similarity_key not in {a.similarity_key for a in asked if a.similarity_key}
-            and s.similarity_key not in known_keys
-        ]
+        remaining = _remaining_seeds(seeds, asked, known_keys)
         obs = _context_observation(
             intent=intent,
             query=query,
@@ -360,38 +369,72 @@ async def run_intent_react(
 
         if tool == "ask_user":
             raw_ask = data.get("ask_user") if isinstance(data.get("ask_user"), dict) else {}
-            # Prefer matching seed if id/key aligns
             need = None
             ask_id = str(raw_ask.get("id") or "")
             ask_key = str(raw_ask.get("similarity_key") or "")
-            if ask_key and ask_key in known_keys:
+            ask_question = str(raw_ask.get("question") or "")
+            ask_options = [str(o) for o in (raw_ask.get("options") or [])][:4]
+            inferred_key = _infer_similarity_key(ask_question, ask_options)
+            if not ask_key and inferred_key:
+                ask_key = inferred_key
+
+            asked_keys = {a.similarity_key for a in asked if a.similarity_key}
+            if ask_key and (ask_key in known_keys or ask_key in asked_keys):
                 observations.append(
-                    f"observation: refused ask_user for known key {ask_key}"
+                    f"observation: refused ask_user for already-covered key {ask_key}"
                 )
+                if not remaining:
+                    break
                 continue
+
             for s in remaining:
                 if (ask_id and s.id == ask_id) or (ask_key and s.similarity_key == ask_key):
                     need = s
                     break
+                if inferred_key and s.similarity_key == inferred_key:
+                    need = s
+                    break
+            # Prefer seed over custom paraphrase when any seed remains for this topic.
+            if need is None and remaining and inferred_key:
+                for s in remaining:
+                    if s.similarity_key == inferred_key:
+                        need = s
+                        break
             if need is None and remaining:
                 need = remaining[0]
-            if need is None and raw_ask.get("question"):
+            if need is None and ask_question:
+                key = ask_key or inferred_key or f"{intent}.custom"
+                if key in asked_keys or key in known_keys:
+                    observations.append(f"observation: skipped duplicate custom key {key}")
+                    if not remaining:
+                        break
+                    continue
                 need = ClarificationNeed(
                     id=ask_id or f"{intent}.custom_{step}",
                     intent=intent,  # type: ignore[arg-type]
-                    question=str(raw_ask.get("question")),
-                    options=[str(o) for o in (raw_ask.get("options") or [])][:4],
+                    question=ask_question,
+                    options=ask_options,
                     reason=str(raw_ask.get("reason") or thought or "react ask_user"),
-                    similarity_key=ask_key or ask_id or f"{intent}.custom",
+                    similarity_key=key,
                 )
             if need and need.similarity_key in known_keys:
                 observations.append(
                     f"observation: skipped ask_user; {need.similarity_key} already known"
                 )
                 continue
+            if need and need.similarity_key in asked_keys:
+                observations.append(
+                    f"observation: skipped duplicate ask_user {need.similarity_key}"
+                )
+                if not _remaining_seeds(seeds, asked, known_keys):
+                    break
+                continue
             if need:
                 asked.append(need)
                 observations.append(f"observation: recorded ask_user {need.id}")
+            # Do not invent a second paraphrased question once seeds are covered.
+            if not _remaining_seeds(seeds, asked, known_keys):
+                break
             if len(asked) >= 2:
                 break
             continue
@@ -437,6 +480,55 @@ async def run_intent_react(
         reason="react complete",
         used_facts=used_facts_dump,
     )
+
+
+def _infer_similarity_key(question: str, options: list[str] | None = None) -> str:
+    """Map free-form ask text onto a stable similarity_key for dedupe."""
+    blob = f"{question or ''} {' '.join(options or [])}".lower()
+    if any(
+        w in blob
+        for w in (
+            "ready-made",
+            "ready made",
+            "store-bought",
+            "store bought",
+            "bake",
+            "homemade",
+            "ingredients",
+            "make at home",
+            "make-at-home",
+        )
+    ):
+        return "fulfillment_path"
+    if any(w in blob for w in ("adult", "child", "kid", "pet", "household", "how many people", "who is coming")):
+        return "party_size"
+    if "meal" in blob and any(w in blob for w in ("one meal", "multiple", "weekend", "breakfast", "dinner")):
+        return "meal_count"
+    if any(w in blob for w in ("power station", "power bank", "charging", "rv overnight")):
+        return "power_capacity"
+    if any(w in blob for w in ("diaper", "wipe", "medicine", "first-aid", "care item")):
+        return "care_items"
+    if any(w in blob for w in ("kids need different", "same food", "toddler")):
+        return "kids_food"
+    if any(w in blob for w in ("warm", "cold", "rain", "weather", "jacket", "camping near")):
+        return "weather_gear"
+    return ""
+
+
+def _remaining_seeds(
+    seeds: list[ClarificationNeed],
+    asked: list[ClarificationNeed],
+    known_keys: set[str],
+) -> list[ClarificationNeed]:
+    asked_ids = {a.id for a in asked}
+    asked_keys = {a.similarity_key for a in asked if a.similarity_key}
+    return [
+        s
+        for s in seeds
+        if s.id not in asked_ids
+        and s.similarity_key not in asked_keys
+        and s.similarity_key not in known_keys
+    ]
 
 
 def _item_matches_intent(category: str, intent: str) -> bool:
