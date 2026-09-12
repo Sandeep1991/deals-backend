@@ -463,7 +463,8 @@ def _format_reply(comparison: StoreComparison) -> str:
     ]
 
     for item in plan.required_items:
-        lines.append(f"- {item.name}")
+        qty = f" × {item.quantity:g}" if item.quantity and item.quantity != 1 else ""
+        lines.append(f"- {item.name}{qty}")
 
     if plan.alternative_options:
         labels = sorted({opt.label for opt in plan.alternative_options})

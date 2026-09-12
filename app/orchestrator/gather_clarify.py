@@ -54,6 +54,7 @@ def dedupe_needs(needs: list[ClarificationNeed]) -> list[ClarificationNeed]:
         "party_size",
         "ages",
         "pets",
+        "meal_count",
         "kids_food",
         "care_items",
         "weather_gear",
@@ -70,7 +71,7 @@ def dedupe_needs(needs: list[ClarificationNeed]) -> list[ClarificationNeed]:
         if key not in seen:
             ordered.append(need)
     ordered.extend(no_key)
-    return ordered[:5]
+    return ordered[:6]
 
 
 def _flatten_questions(intent_clarifications: list[dict[str, Any]]) -> list[ClarificationNeed]:

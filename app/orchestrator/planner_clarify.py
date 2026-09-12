@@ -270,6 +270,32 @@ def grocery_planner_needs(
                     reason="grocery quantities need household size",
                 )
             )
+        blob = _blob(query, history, preference_summary)
+        meal_known = bool(
+            re.search(
+                r"\b("
+                r"\d+\s*meals?|breakfast|lunch|dinner|one night|single meal|just dinner|"
+                r"one gathering|full camping weekend|"
+                r"fri(day)?|sat(urday)?|sun(day)?"
+                r")\b",
+                blob,
+            )
+        )
+        if not meal_known:
+            needs.append(
+                ClarificationNeed(
+                    similarity_key="meal_count",
+                    id="grocery.meal_count",
+                    intent="grocery",
+                    question="Are you shopping for one meal, or multiple meals across the trip (e.g. Fri dinner–Sun lunch)?",
+                    options=[
+                        "One meal / one gathering",
+                        "Full camping weekend (~6 meals)",
+                        "I'll list which meals",
+                    ],
+                    reason="package quantities depend on one meal vs multi-meal trip",
+                )
+            )
 
     looks_bakery = any(
         t in text

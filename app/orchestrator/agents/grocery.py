@@ -116,6 +116,8 @@ def _grocery_decompose_query(
         "and other staples as needed. "
         "If planning guidance says kids eat differently, include kid-specific food too. "
         "If guidance mentions diapers, wipes, or medicines, include those care items. "
+        "If the trip covers multiple meals (camping weekend / Fri–Sun), scale water and "
+        "food packages for adults + children across that meal count — not a single dinner. "
         "Skip tents, sleeping bags, specialty outdoor gear, and electronics/power stations "
         "(other agents handle gear/clothing/power)."
     ]
@@ -218,33 +220,61 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
 
     # Decompose against the original event ask, not "2."
     decompose_user_ask = original_user_ask(history, fallback=query) if planning_guidance else query
+    meal_justification = ""
 
     if rewrite:
         plan, items = await _rewrite_for_preferences(query, state, items, summary, pref)
-    elif _needs_decompose(query, items) or planning_guidance:
-        decomposed = await decompose_node(
-            {
-                "query": _grocery_decompose_query(
+    else:
+        from app.orchestrator.grocery_meal_react import needs_meal_react, run_grocery_meal_react
+
+        use_meal_react = needs_meal_react(
+            query=decompose_user_ask or query,
+            planning_guidance=planning_guidance,
+            history=history,
+            preference_summary=pref.model_dump() if pref else None,
+            items=items,
+        )
+        if use_meal_react:
+            meal_result = await run_grocery_meal_react(
+                query=_grocery_decompose_query(
                     decompose_user_ask,
                     items,
                     planning_guidance=planning_guidance,
                 ),
-                "plan": None,
-                "quotes": [],
-                "comparison": None,
-                "reply": "",
-                "ads": [],
-            }  # type: ignore[arg-type]
-        )
-        plan = decomposed.get("plan")
-        if not plan or (not plan.required_items and not plan.alternative_options):
-            plan = _items_to_plan(query, summary, items)
-        else:
+                planning_guidance=planning_guidance,
+                history=history,
+                preference_summary=pref.model_dump() if pref else None,
+                seeds=items,
+            )
+            plan = meal_result.plan
             if summary and not (plan.event_summary or "").strip():
                 plan.event_summary = summary
             items = _plan_to_items(plan)
-    else:
-        plan = _items_to_plan(query, summary, items)
+            meal_justification = meal_result.justification_markdown
+        elif _needs_decompose(query, items) or planning_guidance:
+            decomposed = await decompose_node(
+                {
+                    "query": _grocery_decompose_query(
+                        decompose_user_ask,
+                        items,
+                        planning_guidance=planning_guidance,
+                    ),
+                    "plan": None,
+                    "quotes": [],
+                    "comparison": None,
+                    "reply": "",
+                    "ads": [],
+                }  # type: ignore[arg-type]
+            )
+            plan = decomposed.get("plan")
+            if not plan or (not plan.required_items and not plan.alternative_options):
+                plan = _items_to_plan(query, summary, items)
+            else:
+                if summary and not (plan.event_summary or "").strip():
+                    plan.event_summary = summary
+                items = _plan_to_items(plan)
+        else:
+            plan = _items_to_plan(query, summary, items)
 
     from app.orchestrator.clarify import seed_items_for_choice
     from app.party_planner.nodes import _strip_diy_bakery_items
@@ -301,8 +331,15 @@ async def grocery_agent_node(state: OrchestratorState, search_service: SearchSer
         notes.append("Could not build a grocery store comparison.")
     if rewrite and pref.preferences:
         notes.append(f"Repriced list using preference summary: {pref.label()}.")
+    if meal_justification:
+        notes.append("Meal plan quantities justified for household × meal count.")
 
     reply_fragment = comparison.reply if comparison else ""
+    if meal_justification:
+        reply_fragment = (
+            meal_justification
+            + ("\n\n" + reply_fragment if reply_fragment else "")
+        ).strip()
     if rewrite and comparison:
         preface = (
             f"Updated the prior grocery list using your preference summary"

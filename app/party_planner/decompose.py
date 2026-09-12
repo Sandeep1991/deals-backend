@@ -22,6 +22,9 @@ CRITICAL — how `quantity` works:
 - `quantity` = number of PACKAGES/UNITS to buy at the store (boxes, bags, cans, bottles).
 - `quantity` is NOT the number of guests. Never set quantity to people_count for shareable items.
 - `people_count`: how many guests (from the request), or null if unknown.
+- When the trip spans multiple meals (camping weekend, breakfast+lunch+dinner), scale
+  water/snacks/perishables for meal_count × people — do not plan as if it were one dinner.
+- Prefer stating adults vs children when known; kid-specific items when kids eat differently.
 
 Pack-size examples:
 - "taco shells" for 6 people → quantity 1 (one 12-count box is enough for ~6 people at 2 tacos each)

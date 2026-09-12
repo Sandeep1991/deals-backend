@@ -36,7 +36,7 @@ Return JSON only for ONE action per step:
   "tool": "get_known_context" | "ask_user" | "mark_intent_ready",
   "ask_user": {
     "id": "intent.topic",
-    "similarity_key": "party_size|kids_food|care_items|weather_gear|power_capacity|fulfillment_path|ages|pets",
+    "similarity_key": "party_size|kids_food|care_items|weather_gear|power_capacity|fulfillment_path|ages|pets|meal_count",
     "question": "plain question",
     "options": ["opt1", "opt2"],
     "reason": "why"
