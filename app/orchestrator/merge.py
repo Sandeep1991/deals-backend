@@ -243,6 +243,20 @@ def to_chat_payload(state: OrchestratorState) -> dict:
     """Map orchestrator state into ChatResponse fields."""
     comparison = state.get("comparison")
     compare_out = to_compare_response(comparison) if comparison else None
+    clarification_out = None
+    from app.orchestrator.clarify import clarification_from_raw
+    from app.orchestrator.planner_clarify import ClarificationNeed, clarification_prompt_payload
+
+    decision = clarification_from_raw(state.get("clarification"))
+    if decision and decision.needs_clarification and decision.questions:
+        needs: list[ClarificationNeed] = []
+        for raw in decision.questions:
+            try:
+                needs.append(ClarificationNeed.model_validate(raw))
+            except Exception:
+                continue
+        if needs:
+            clarification_out = clarification_prompt_payload(needs)
     return {
         "query": state["query"],
         "reply": state.get("reply") or "",
@@ -251,4 +265,5 @@ def to_chat_payload(state: OrchestratorState) -> dict:
         "comparison": compare_out,
         "chat_id": state.get("chat_id") or None,
         "preference_summary": state.get("preference_summary"),
+        "clarification": clarification_out,
     }
